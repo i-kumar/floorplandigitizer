@@ -1,0 +1,556 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  color: #1c1c1c;
+  background: #f4f3f1;
+  overflow: hidden;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ---------------- toolbar ---------------- */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: #22272b;
+  color: #e8eaed;
+  flex-wrap: wrap;
+}
+
+.toolbar .spacer {
+  flex: 1;
+}
+
+.building-name {
+  background: #2e353a;
+  border: 1px solid #3c444a;
+  color: #e8eaed;
+  border-radius: 6px;
+  padding: 5px 8px;
+  width: 150px;
+  font-size: 13px;
+}
+
+.tool-group {
+  display: flex;
+  gap: 2px;
+  background: #2e353a;
+  border-radius: 8px;
+  padding: 2px;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+.tool,
+.chip {
+  background: transparent;
+  color: #cdd3d8;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.tool:hover,
+.chip:hover {
+  background: #3a4147;
+}
+
+.tool.active,
+.chip.active {
+  background: #4b90e2;
+  color: #fff;
+}
+
+.tool.door.active {
+  background: #8d6e63;
+}
+
+.tool.primary {
+  background: #2f9e44;
+  color: #fff;
+}
+
+.tool:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.key-hint {
+  font-size: 10px;
+  opacity: 0.6;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  padding: 0 3px;
+  line-height: 1.3;
+}
+
+.opacity {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #aab2b9;
+}
+
+.opacity input {
+  width: 90px;
+}
+
+/* ---------------- layout ---------------- */
+
+.main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.canvas-wrap {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+}
+
+.editor-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  outline: none;
+  touch-action: none;
+}
+
+.banner {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #b96b00;
+  color: #fff;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 13px;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  max-width: 80%;
+}
+
+.banner.calm {
+  background: #6a1b9a;
+}
+
+.sidebar {
+  width: 300px;
+  background: #ffffff;
+  border-left: 1px solid #ddd8d1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------------- panels ---------------- */
+
+.panel {
+  padding: 10px 12px;
+  border-bottom: 1px solid #eee9e2;
+}
+
+.panel-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.panel-title.small {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #555;
+}
+
+.panel-section {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.floor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.floor-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.floor-row:hover {
+  background: #f4f1ec;
+}
+
+.floor-row.active {
+  background: #e3edf9;
+}
+
+.floor-index {
+  font-size: 11px;
+  color: #888;
+  width: 14px;
+  text-align: center;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+
+.floor-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.floor-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.floor-buttons {
+  display: none;
+  gap: 2px;
+}
+
+.floor-row:hover .floor-buttons,
+.floor-row.active .floor-buttons {
+  display: inline-flex;
+}
+
+.mini {
+  background: #eee9e2;
+  border: none;
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 12px;
+  color: #444;
+}
+
+.mini:hover {
+  background: #e0d9cf;
+}
+
+.mini:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.mini.danger:hover {
+  background: #f6c9c5;
+  color: #a2261b;
+}
+
+.wide {
+  width: 100%;
+  padding: 7px;
+  border: 1px solid #d8d2c9;
+  border-radius: 7px;
+  background: #faf8f5;
+}
+
+.wide:hover {
+  background: #f1ede6;
+}
+
+.wide.danger {
+  color: #a2261b;
+  border-color: #e5b6b1;
+}
+
+.wide.danger:hover {
+  background: #fbeae8;
+}
+
+.muted {
+  color: #7d776e;
+}
+
+.small {
+  font-size: 12px;
+}
+
+.row-between {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.field > span {
+  width: 42px;
+  color: #7d776e;
+}
+
+.field input,
+.field select,
+.link-form input,
+.link-form select {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid #d8d2c9;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.link-form {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+code {
+  background: #f1ede6;
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 11px;
+}
+
+.swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  margin-right: 7px;
+  vertical-align: -1px;
+}
+
+/* ---------------- status bar ---------------- */
+
+.statusbar {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  padding: 4px 12px;
+  background: #22272b;
+  color: #aab2b9;
+  font-size: 12px;
+}
+
+.statusbar .spacer {
+  flex: 1;
+}
+
+/* ---------------- dialogs ---------------- */
+
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 22, 24, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 30;
+}
+
+.dialog {
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px 18px;
+  width: min(640px, 92vw);
+  max-height: 86vh;
+  overflow-y: auto;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dialog.narrow {
+  width: min(380px, 92vw);
+}
+
+.dialog-title {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.dialog-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.dialog-buttons button {
+  padding: 7px 14px;
+  border-radius: 7px;
+  border: 1px solid #d8d2c9;
+  background: #faf8f5;
+}
+
+.dialog-buttons button:hover {
+  background: #f1ede6;
+}
+
+.dialog-buttons button.primary {
+  background: #2f9e44;
+  border-color: #2f9e44;
+  color: #fff;
+}
+
+.dialog-buttons button.primary:hover {
+  background: #268a3a;
+}
+
+.dialog-buttons button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.thumb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 10px;
+}
+
+.thumb {
+  border: 2px solid #ddd8d1;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  text-align: center;
+  background: #faf8f5;
+}
+
+.thumb.selected {
+  border-color: #4b90e2;
+  box-shadow: 0 0 0 2px rgba(75, 144, 226, 0.3);
+}
+
+.thumb img {
+  width: 100%;
+  display: block;
+}
+
+.thumb-loading {
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #999;
+}
+
+.thumb-label {
+  font-size: 11px;
+  color: #666;
+  padding: 3px;
+}
+
+.warning-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.warning {
+  background: #fff3e0;
+  border: 1px solid #ffd9a0;
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+.info {
+  background: #eef4fb;
+  border: 1px solid #cadcf0;
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 12px;
+  color: #3c5a80;
+}
+
+.ok {
+  color: #2f9e44;
+  font-size: 13px;
+}
+
+.error {
+  background: #fbeae8;
+  border: 1px solid #e5b6b1;
+  color: #a2261b;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.type-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* ---------------- toasts ---------------- */
+
+.toasts {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 40;
+  pointer-events: none;
+}
+
+.toast {
+  background: #2b3136;
+  color: #fff;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  max-width: 70vw;
+}
