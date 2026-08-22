@@ -178,6 +178,42 @@ describe("nav ripple rules", () => {
   });
 });
 
+describe("outline ripple rules", () => {
+  it("splitWallEdge inserts the new node between adjacent outline corners", () => {
+    const { f } = projectWithRoom();
+    f.outline = ["A", "B", "C", "D"];
+    M.splitWallEdge(f, M.edgeKey("A", "B"), { x: 50, y: 0 }, "m");
+    expect(f.outline).toEqual(["A", "m", "B", "C", "D"]);
+  });
+
+  it("merging corners dedupes; edge deletion does NOT break the outline", () => {
+    const { f } = projectWithRoom();
+    f.outline = ["A", "B", "C", "D"];
+    M.mergeWallNodes(f, "A", "D");
+    expect(f.outline).toEqual(["A", "B", "C"]);
+    // outline corners need not be joined by wall edges — deleting one is fine
+    M.deleteWallEdge(f, M.edgeKey("A", "B"));
+    expect(f.outline).toEqual(["A", "B", "C"]);
+  });
+
+  it("deleting corner nodes drops them; below 3 corners the outline nulls", () => {
+    const { f } = projectWithRoom();
+    f.outline = ["A", "B", "C", "D"];
+    M.deleteWallNode(f, "D");
+    expect(f.outline).toEqual(["A", "B", "C"]);
+    M.deleteWallNode(f, "C");
+    expect(f.outline).toBeNull();
+  });
+
+  it("cloneProject deep-copies the outline array", () => {
+    const { p, f } = projectWithRoom();
+    f.outline = ["A", "B", "C", "D"];
+    const clone = M.cloneProject(p);
+    clone.floors[0].outline!.push("Z");
+    expect(f.outline).toHaveLength(4);
+  });
+});
+
 describe("addEdgeWithIntersections", () => {
   it("splits both segments at a single crossing", () => {
     const p = M.newProject();

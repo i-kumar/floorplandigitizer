@@ -123,11 +123,12 @@ export function Inspector() {
           <br />
           <br />
           <b>W</b> draw walls (<b>D</b> = door segments) · <b>P</b> draw paths · <b>E</b> place
-          POIs · <b>R</b> make rooms · <b>V</b> select/move.
+          POIs · <b>R</b> make rooms · <b>O</b> draw the outline · <b>V</b> select/move ·{" "}
+          <b>H</b> pan.
           <br />
           <br />
           Right-click or Ctrl+Z steps a chain back; Esc finishes it. Hold Shift for 45° lock, Alt
-          to disable snapping. Space/middle-mouse pans, wheel zooms, 0 fits.
+          to disable snapping. Scroll (or Space/H-drag) pans, pinch or ⌘+scroll zooms, 0 fits.
         </div>
       ) : (
         <SelectionBody floor={floor} sel={sel} />

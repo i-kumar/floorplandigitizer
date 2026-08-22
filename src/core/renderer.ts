@@ -117,6 +117,23 @@ export class Renderer {
     const navAlpha = layer === "nav" ? 1 : DIM;
     const poisAlpha = layer === "pois" ? 1 : DIM;
 
+    // 2a. building outline (footprint): wide halo + thin line under everything
+    if (floor.outline) {
+      const pts = floor.outline.map((id) => floor.walls.nodes[id]).filter(Boolean);
+      if (pts.length >= 3 && pts.length === floor.outline.length) {
+        ctx.beginPath();
+        this.tracePath(ctx, pts, true);
+        ctx.strokeStyle = "#546e7a";
+        ctx.lineWidth = 9 / z;
+        ctx.globalAlpha = 0.22 * Math.max(wallsAlpha, 0.6);
+        ctx.stroke();
+        ctx.lineWidth = 1.5 / z;
+        ctx.globalAlpha = 0.6 * Math.max(wallsAlpha, 0.6);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
+
     // 2. room fills (belong visually to the walls layer)
     ctx.globalAlpha = 1;
     for (const room of Object.values(floor.rooms)) {
@@ -229,6 +246,32 @@ export class Renderer {
       ctx.setLineDash([6 / z, 4 / z]);
       ctx.stroke();
       ctx.setLineDash([]);
+    }
+
+    // 6b. outline draft (Outline tool): picked corners + rubber band + close ring
+    const draft = overlayStore.outlineDraft;
+    if (draft && draft.length) {
+      ctx.strokeStyle = COLORS.snap;
+      ctx.lineWidth = 2.5 / z;
+      if (draft.length > 1) {
+        ctx.beginPath();
+        this.tracePath(ctx, draft, false);
+        ctx.stroke();
+      }
+      const sp = overlayStore.snapPreview;
+      if (editorStore.tool === "outline" && sp) {
+        ctx.setLineDash([6 / z, 4 / z]);
+        ctx.lineWidth = 1.5 / z;
+        this.line(ctx, draft[draft.length - 1], sp.point);
+        ctx.setLineDash([]);
+      }
+      ctx.fillStyle = COLORS.snap;
+      for (const p of draft) this.dot(ctx, p, 3.5 / z);
+      if (draft.length >= 3) {
+        // click the first corner again to close
+        ctx.lineWidth = 2 / z;
+        this.dot(ctx, draft[0], 9 / z, true, "transparent");
+      }
     }
 
     // 7. in-progress chain rubber band + snap indicators

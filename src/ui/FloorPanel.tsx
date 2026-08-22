@@ -215,6 +215,35 @@ export function FloorPanel() {
       <div className="panel-section">
         <div className="row-between">
           <span className="muted small">
+            Outline:{" "}
+            {current?.outline ? `${current.outline.length} corners` : "not set"}
+          </span>
+          <span>
+            <button
+              className="mini"
+              title="Draw the footprint: click wall corners in order, click the first again (or Enter) to close (O)"
+              onClick={() => setTool("outline")}
+            >
+              Draw
+            </button>
+            {current?.outline && (
+              <button
+                className="mini"
+                title="Remove the outline"
+                onClick={() =>
+                  docStore.transact((p) => {
+                    const fl = M.findFloor(p, editor.floorId);
+                    if (fl) fl.outline = null;
+                  })
+                }
+              >
+                Clear
+              </button>
+            )}
+          </span>
+        </div>
+        <div className="row-between">
+          <span className="muted small">
             Scale:{" "}
             {current?.pxPerMeter ? `${current.pxPerMeter.toFixed(2)} px/m` : "not calibrated"}
           </span>

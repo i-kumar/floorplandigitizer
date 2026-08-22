@@ -81,6 +81,14 @@ export function handleKeyDown(e: KeyboardEvent): void {
     case "V":
       setTool("select");
       break;
+    case "h":
+    case "H":
+      setTool("pan");
+      break;
+    case "o":
+    case "O":
+      setTool("outline");
+      break;
     case "w":
     case "W":
       setTool("wall");

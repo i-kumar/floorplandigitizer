@@ -5,10 +5,12 @@ import { useDocStore, useEditor } from "./hooks";
 
 const TOOLS: Array<{ id: ToolId; label: string; keyHint: string; title: string }> = [
   { id: "select", label: "Select", keyHint: "V", title: "Select / move / delete (V)" },
+  { id: "pan", label: "Pan", keyHint: "H", title: "Pan by dragging (H) — scroll also pans; pinch or ⌘+scroll zooms" },
   { id: "wall", label: "Walls", keyHint: "W", title: "Draw wall chains (W) — D toggles door segments" },
   { id: "path", label: "Paths", keyHint: "P", title: "Draw the walkable nav network (P)" },
   { id: "poi", label: "POI", keyHint: "E", title: "Place points of interest (E)" },
   { id: "room", label: "Room", keyHint: "R", title: "Create a room from an enclosed wall region (R)" },
+  { id: "outline", label: "Outline", keyHint: "O", title: "Draw the building footprint: click wall corners in order, click the first again to close (O)" },
   { id: "calibrate", label: "Scale", keyHint: "C", title: "Calibrate px-per-meter (C)" },
 ];
 

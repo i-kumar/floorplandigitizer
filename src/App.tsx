@@ -104,6 +104,12 @@ export default function App() {
               {editor.calibPoint ? " — now click the second point" : ""}
             </div>
           )}
+          {editor.tool === "outline" && (
+            <div className="banner calm">
+              Outline: click the building's corner nodes in order — click the first one again
+              (or press Enter) to finish; right-click/Ctrl+Z un-picks; Esc cancels
+            </div>
+          )}
         </div>
         <aside className="sidebar">
           <FloorPanel />

@@ -15,10 +15,12 @@ import { pointInPolygon, polygonSignedArea } from "./geometry";
 
 export interface Face {
   loop: NodeId[];
-  area: number; // positive
+  area: number; // signed: bounded faces positive, each component's outer face negative
 }
 
-export function traceFaces(g: Graph): Face[] {
+/** Every face of the graph, signed. Bounded (interior) faces are positive;
+ *  the unbounded outer face of each closed component is negative. */
+function traceAllFaces(g: Graph): Face[] {
   const out = new Map<NodeId, NodeId[]>();
   for (const e of Object.values(g.edges)) {
     if (!g.nodes[e.a] || !g.nodes[e.b]) continue;
@@ -64,10 +66,26 @@ export function traceFaces(g: Graph): Face[] {
       if (guard >= LIMIT || loop.length < 3) continue;
       const pts = loop.map((id) => g.nodes[id]);
       const area = polygonSignedArea(pts);
-      if (area > 1e-6) faces.push({ loop, area });
+      if (Math.abs(area) > 1e-6) faces.push({ loop, area });
     }
   }
   return faces;
+}
+
+/** Bounded faces only — the candidate rooms. */
+export function traceFaces(g: Graph): Face[] {
+  return traceAllFaces(g).filter((f) => f.area > 0);
+}
+
+/** The building footprint: the outer boundary of the largest closed component,
+ *  reversed into the same positive orientation as room loops. Null when no
+ *  component forms a closed cycle (open perimeter). */
+export function outerBoundary(g: Graph): NodeId[] | null {
+  let best: Face | null = null;
+  for (const f of traceAllFaces(g)) {
+    if (f.area < 0 && (!best || f.area < best.area)) best = f;
+  }
+  return best ? [...best.loop].reverse() : null;
 }
 
 /** Smallest bounded face containing the point (handles nesting), or null. */

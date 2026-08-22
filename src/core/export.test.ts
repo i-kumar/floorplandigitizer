@@ -25,6 +25,8 @@ function sampleProject() {
   f1.rooms.r1 = { id: "r1", name: "Lobby", loop: ["A", "B", "C", "D"], poiId: "proom" };
   f1.pois.proom = { id: "proom", x: 50, y: 50, type: "room", name: "Lobby", roomId: "r1" };
 
+  f1.outline = ["A", "B", "C", "D"];
+
   M.addNode(f1.nav, { x: 10.111, y: 20.222 }, "n1");
   M.addNode(f1.nav, { x: 90, y: 20 }, "n2");
   M.addEdge(f1.nav, "n1", "n2", "accessible");
@@ -33,6 +35,17 @@ function sampleProject() {
   f1.image = { dataUrl: "data:,x", width: 1000, height: 800 };
 
   M.addNode(f2.nav, { x: 5, y: 5 }, "m1");
+  for (const [id, pt] of Object.entries({
+    W1: { x: 0, y: 0 },
+    W2: { x: 50, y: 0 },
+    W3: { x: 50, y: 50 },
+  })) {
+    M.addNode(f2.walls, pt, id);
+  }
+  M.addEdge(f2.walls, "W1", "W2");
+  M.addEdge(f2.walls, "W2", "W3");
+  M.addEdge(f2.walls, "W3", "W1");
+  f2.outline = ["W1", "W2", "W3"];
   f2.pxPerMeter = 40;
   f2.image = { dataUrl: "data:,y", width: 1000, height: 800 };
   p.interFloorEdges.push({
@@ -67,7 +80,14 @@ describe("buildExport", () => {
     const roomPoi = f1.pois.find((x) => x.type === "room");
     expect(roomPoi?.roomId).toBe("r1");
     expect(f1.rooms).toHaveLength(1);
+    expect(f1.rooms[0].type).toBe("room");
     expect(f1.rooms[0].polygon).toEqual([
+      [0, 0],
+      [100, 0],
+      [100, 100],
+      [0, 100],
+    ]);
+    expect(f1.outline).toEqual([
       [0, 0],
       [100, 0],
       [100, 100],
@@ -118,6 +138,42 @@ describe("buildExport", () => {
     const { warnings } = buildExport(p);
     expect(warnings.some((w) => w.message.includes("Orphan nav node island"))).toBe(true);
     expect(warnings.some((w) => w.message.includes("disconnected parts"))).toBe(true);
+  });
+
+  it("bakes a customized room-POI type into the room entry", () => {
+    const { p, f1 } = sampleProject();
+    f1.pois.proom.type = "classroom";
+    const { json } = buildExport(p);
+    expect(json.floors[0].rooms[0].type).toBe("classroom");
+  });
+
+  it("accepts edge-less outlines and normalizes winding to room orientation", () => {
+    const { p, f1 } = sampleProject();
+    f1.outline = ["A", "C", "B"]; // A-C is not a wall edge; clicked "backwards"
+    const { json } = buildExport(p);
+    expect(json.floors[0].outline).toEqual([
+      [100, 0],
+      [100, 100],
+      [0, 0],
+    ]);
+  });
+
+  it("warns on an outline with a missing node and exports it as null", () => {
+    const { p, f1 } = sampleProject();
+    f1.outline = ["A", "C", "ghost"];
+    const { json, warnings } = buildExport(p);
+    expect(json.floors[0].outline).toBeNull();
+    expect(warnings.some((w) => w.message.includes("outline is broken"))).toBe(true);
+  });
+
+  it("notes a missing outline at info level", () => {
+    const { p, f1 } = sampleProject();
+    f1.outline = null;
+    const { json, warnings } = buildExport(p);
+    expect(json.floors[0].outline).toBeNull();
+    expect(
+      warnings.some((w) => w.level === "info" && w.message.includes("no building outline")),
+    ).toBe(true);
   });
 
   it("warns on broken room loops and skips them", () => {

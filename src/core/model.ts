@@ -68,6 +68,12 @@ export interface Floor {
   nav: Graph;
   pois: Record<PoiId, Poi>;
   rooms: Record<RoomId, Room>;
+  /** Building footprint for zoomed-out rendering: an ordered ring of wall node
+   *  ids picked with the Outline tool. Corners need NOT be joined by wall edges
+   *  (unlike room loops) — the polygon simply connects the picked nodes, so it
+   *  follows wall edits and tolerates gaps in the wall graph. Nulled when it
+   *  drops below 3 existing nodes. */
+  outline: NodeId[] | null;
 }
 
 export type LinkKind = "stairs" | "elevator" | "escalator";
@@ -120,6 +126,7 @@ export function newFloor(p: Project, name: string): Floor {
     nav: emptyGraph(),
     pois: {},
     rooms: {},
+    outline: null,
   };
 }
 
@@ -265,11 +272,30 @@ export function sweepRooms(floor: Floor): RoomId[] {
   return dead;
 }
 
+/** Outline validity is looser than rooms': just >= 3 existing wall nodes. */
+function sweepOutline(floor: Floor): void {
+  if (!floor.outline) return;
+  if (floor.outline.length < 3 || floor.outline.some((id) => !floor.walls.nodes[id])) {
+    floor.outline = null;
+  }
+}
+
 function dedupeLoop(loop: NodeId[]): NodeId[] {
   const out: NodeId[] = [];
   for (const id of loop) if (out[out.length - 1] !== id) out.push(id);
   while (out.length > 1 && out[0] === out[out.length - 1]) out.pop();
   return out;
+}
+
+function patchLoopOnSplit(loop: NodeId[], a: NodeId, b: NodeId, id: NodeId): void {
+  for (let i = 0; i < loop.length; i++) {
+    const u = loop[i];
+    const v = loop[(i + 1) % loop.length];
+    if ((u === a && v === b) || (u === b && v === a)) {
+      loop.splice(i + 1, 0, id);
+      return;
+    }
+  }
 }
 
 export function splitWallEdge(floor: Floor, key: string, at: Vec2, id: NodeId): GraphNode | null {
@@ -278,17 +304,8 @@ export function splitWallEdge(floor: Floor, key: string, at: Vec2, id: NodeId): 
   const { a, b } = e;
   const n = splitEdge(floor.walls, key, at, id);
   if (!n) return null;
-  for (const r of Object.values(floor.rooms)) {
-    const L = r.loop;
-    for (let i = 0; i < L.length; i++) {
-      const u = L[i];
-      const v = L[(i + 1) % L.length];
-      if ((u === a && v === b) || (u === b && v === a)) {
-        L.splice(i + 1, 0, id);
-        break;
-      }
-    }
-  }
+  for (const r of Object.values(floor.rooms)) patchLoopOnSplit(r.loop, a, b, id);
+  if (floor.outline) patchLoopOnSplit(floor.outline, a, b, id);
   return n;
 }
 
@@ -297,7 +314,11 @@ export function mergeWallNodes(floor: Floor, keep: NodeId, drop: NodeId): void {
   for (const r of Object.values(floor.rooms)) {
     r.loop = dedupeLoop(r.loop.map((x) => (x === drop ? keep : x)));
   }
+  if (floor.outline) {
+    floor.outline = dedupeLoop(floor.outline.map((x) => (x === drop ? keep : x)));
+  }
   sweepRooms(floor);
+  sweepOutline(floor);
 }
 
 export function deleteWallNode(floor: Floor, id: NodeId): void {
@@ -305,7 +326,11 @@ export function deleteWallNode(floor: Floor, id: NodeId): void {
   for (const r of Object.values(floor.rooms)) {
     r.loop = dedupeLoop(r.loop.filter((x) => !removed.has(x)));
   }
+  if (floor.outline) {
+    floor.outline = dedupeLoop(floor.outline.filter((x) => !removed.has(x)));
+  }
   sweepRooms(floor);
+  sweepOutline(floor);
 }
 
 export function deleteWallEdge(floor: Floor, key: string): void {
@@ -313,7 +338,11 @@ export function deleteWallEdge(floor: Floor, key: string): void {
   for (const r of Object.values(floor.rooms)) {
     r.loop = dedupeLoop(r.loop.filter((x) => !removed.has(x)));
   }
+  if (floor.outline) {
+    floor.outline = dedupeLoop(floor.outline.filter((x) => !removed.has(x)));
+  }
   sweepRooms(floor);
+  sweepOutline(floor);
 }
 
 // ---------------------------------------------------------------------------
@@ -498,6 +527,7 @@ export function cloneProject(p: Project): Project {
       rooms: Object.fromEntries(
         Object.entries(f.rooms).map(([id, r]) => [id, { ...r, loop: [...r.loop] }]),
       ),
+      outline: f.outline ? [...f.outline] : null,
     })),
     interFloorEdges: p.interFloorEdges.map((e) => ({
       ...e,

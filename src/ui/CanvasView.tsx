@@ -108,7 +108,11 @@ export function CanvasView({ onDropFiles }: Props) {
   }, []);
 
   const cursor =
-    editor.spaceDown ? "grab" : editor.tool === "select" ? "default" : "crosshair";
+    editor.spaceDown || editor.tool === "pan"
+      ? "grab"
+      : editor.tool === "select"
+        ? "default"
+        : "crosshair";
 
   return <canvas ref={ref} className="editor-canvas" style={{ cursor }} tabIndex={-1} />;
 }

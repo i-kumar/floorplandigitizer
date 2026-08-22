@@ -116,7 +116,7 @@ export class DocStore extends BaseStore {
   }
 }
 
-export type ToolId = "select" | "wall" | "path" | "poi" | "room" | "calibrate";
+export type ToolId = "select" | "pan" | "wall" | "path" | "poi" | "room" | "outline" | "calibrate";
 export type LayerId = "walls" | "nav" | "pois";
 
 export type ItemRef =
@@ -187,6 +187,7 @@ export class OverlayStore extends BaseStore {
   cursor: Vec2 | null = null;
   snapPreview: SnapResult | null = null;
   roomPreview: Vec2[] | null = null;
+  outlineDraft: Vec2[] | null = null; // Outline tool's picked corners, in order
   hover: ItemRef | null = null;
 
   update(fn: (s: OverlayStore) => void): void {

@@ -84,6 +84,9 @@ export function validateProject(obj: unknown): Project {
     f.nav.edges ??= {};
     f.pois ??= {};
     f.rooms ??= {};
+    if (!Array.isArray(f.outline) || !f.outline.every((x) => typeof x === "string")) {
+      f.outline = null;
+    }
   }
   return p;
 }

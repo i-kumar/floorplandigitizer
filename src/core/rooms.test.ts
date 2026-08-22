@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { emptyGraph, type Graph, type Vec2 } from "./model";
-import { canonicalLoopKey, faceAtPoint, traceFaces } from "./rooms";
+import { polygonSignedArea } from "./geometry";
+import { canonicalLoopKey, faceAtPoint, outerBoundary, traceFaces } from "./rooms";
 
 function graphWith(nodes: Record<string, Vec2>, edges: Array<[string, string]>): Graph {
   const g = emptyGraph();
@@ -126,6 +127,80 @@ describe("faceAtPoint", () => {
     expect(inner!.area).toBeCloseTo(10000);
     const outer = faceAtPoint(g, faces, { x: 50, y: 50 });
     expect(outer!.area).toBeCloseTo(90000);
+  });
+});
+
+describe("outerBoundary", () => {
+  it("returns the square's perimeter in positive orientation", () => {
+    const g = square();
+    const loop = outerBoundary(g)!;
+    expect(loop).toHaveLength(4);
+    expect(new Set(loop)).toEqual(new Set(["A", "B", "C", "D"]));
+    const pts = loop.map((id) => g.nodes[id]);
+    expect(polygonSignedArea(pts)).toBeCloseTo(10000); // same orientation as room loops
+  });
+
+  it("returns the hull of two adjacent rooms, not either room", () => {
+    const g = graphWith(
+      {
+        A: { x: 0, y: 0 },
+        B: { x: 100, y: 0 },
+        C: { x: 100, y: 100 },
+        D: { x: 0, y: 100 },
+        E: { x: 200, y: 0 },
+        F: { x: 200, y: 100 },
+      },
+      [
+        ["A", "B"],
+        ["B", "C"],
+        ["C", "D"],
+        ["D", "A"],
+        ["B", "E"],
+        ["E", "F"],
+        ["F", "C"],
+      ],
+    );
+    const loop = outerBoundary(g)!;
+    expect(new Set(loop)).toEqual(new Set(["A", "B", "E", "F", "C", "D"]));
+    expect(polygonSignedArea(loop.map((id) => g.nodes[id]))).toBeCloseTo(20000);
+  });
+
+  it("returns null for an open (unclosed) polyline", () => {
+    const g = graphWith(
+      { A: { x: 0, y: 0 }, B: { x: 100, y: 0 }, C: { x: 100, y: 100 } },
+      [
+        ["A", "B"],
+        ["B", "C"],
+      ],
+    );
+    expect(outerBoundary(g)).toBeNull();
+  });
+
+  it("picks the largest closed component", () => {
+    const g = graphWith(
+      {
+        A: { x: 0, y: 0 },
+        B: { x: 300, y: 0 },
+        C: { x: 300, y: 300 },
+        D: { x: 0, y: 300 },
+        a: { x: 100, y: 100 },
+        b: { x: 200, y: 100 },
+        c: { x: 200, y: 200 },
+        d: { x: 100, y: 200 },
+      },
+      [
+        ["A", "B"],
+        ["B", "C"],
+        ["C", "D"],
+        ["D", "A"],
+        ["a", "b"],
+        ["b", "c"],
+        ["c", "d"],
+        ["d", "a"],
+      ],
+    );
+    const loop = outerBoundary(g)!;
+    expect(new Set(loop)).toEqual(new Set(["A", "B", "C", "D"]));
   });
 });
 

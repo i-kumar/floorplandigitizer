@@ -6,7 +6,7 @@ import {
   type Floor,
   type Project,
 } from "./model";
-import { dist } from "./geometry";
+import { dist, polygonSignedArea } from "./geometry";
 
 export interface ExportFloor {
   id: string;
@@ -28,7 +28,16 @@ export interface ExportFloor {
     roomId?: string;
     navNodeId?: string;
   }>;
-  rooms: Array<{ id: string; name: string; polygon: Array<[number, number]>; poiId: string }>;
+  rooms: Array<{
+    id: string;
+    name: string;
+    /** Mirrors the room-POI's type ("room" unless changed, e.g. "classroom"). */
+    type: string;
+    polygon: Array<[number, number]>;
+    poiId: string;
+  }>;
+  /** Building footprint polygon for zoomed-out map rendering; null if not set. */
+  outline: Array<[number, number]> | null;
 }
 
 export interface ExportJson {
@@ -157,6 +166,7 @@ function exportFloor(
     rooms.push({
       id: r.id,
       name: r.name,
+      type: f.pois[r.poiId]?.type ?? "room",
       polygon: r.loop.map((id) => {
         const n = f.walls.nodes[id];
         return [r2(n.x), r2(n.y)] as [number, number];
@@ -164,6 +174,25 @@ function exportFloor(
       poiId: r.poiId,
     });
   }
+
+  let outline: ExportFloor["outline"] = null;
+  if (f.outline) {
+    // Outline corners just need to exist — they need not be joined by wall edges.
+    if (f.outline.length >= 3 && f.outline.every((id) => f.walls.nodes[id])) {
+      // Normalize winding to match room polygons, whatever order was clicked.
+      const ids =
+        polygonSignedArea(f.outline.map((id) => f.walls.nodes[id])) < 0
+          ? [...f.outline].reverse()
+          : f.outline;
+      outline = ids.map((id) => {
+        const n = f.walls.nodes[id];
+        return [r2(n.x), r2(n.y)] as [number, number];
+      });
+    } else {
+      warn(`${f.name}: building outline is broken — redraw it (Outline tool, O)`);
+    }
+  }
+  if (!outline) info(`${f.name}: no building outline set (Outline tool — O)`);
 
   if (!f.image) info(`${f.name}: no floor plan image`);
   if (f.pxPerMeter == null) info(`${f.name}: not calibrated (no pxPerMeter)`);
@@ -179,6 +208,7 @@ function exportFloor(
     nav: { nodes: navNodes, edges: navEdges },
     pois,
     rooms,
+    outline,
   };
 }
 

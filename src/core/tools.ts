@@ -579,6 +579,124 @@ class RoomTool implements Tool {
 }
 
 // ---------------------------------------------------------------------------
+// Outline tool: pick wall nodes in order around the building footprint.
+// Nothing is committed until the ring closes, so step-back is pure local state.
+// ---------------------------------------------------------------------------
+
+class OutlineTool implements Tool {
+  private picked: M.NodeId[] = [];
+
+  private snapNode(e: PointerInfo): M.GraphNode | null {
+    const f = currentFloor();
+    let best: M.GraphNode | null = null;
+    let bd = (SNAP.node * 1.5) / zoom(); // a little generous — corners only
+    for (const n of Object.values(f.walls.nodes)) {
+      const d = dist(e.img, n);
+      if (d <= bd) {
+        bd = d;
+        best = n;
+      }
+    }
+    return best;
+  }
+
+  private syncDraft(): void {
+    const f = currentFloor();
+    overlayStore.update((s) => {
+      s.outlineDraft = this.picked.length
+        ? this.picked.map((id) => ({ x: f.walls.nodes[id].x, y: f.walls.nodes[id].y }))
+        : null;
+    });
+  }
+
+  onMove(e: PointerInfo): void {
+    const n = this.snapNode(e);
+    overlayStore.update((s) => {
+      s.snapPreview = n
+        ? { kind: "node", point: { x: n.x, y: n.y }, node: n.id }
+        : { kind: "none", point: e.img };
+    });
+  }
+
+  onDown(e: PointerInfo): void {
+    const n = this.snapNode(e);
+    if (!n) return; // only wall nodes count; the banner explains
+    if (this.picked.length >= 3 && n.id === this.picked[0]) {
+      this.commit();
+      return;
+    }
+    if (this.picked.includes(n.id)) return;
+    this.picked.push(n.id);
+    this.syncDraft();
+  }
+
+  private commit(): void {
+    const picked = [...this.picked];
+    const fid = editorStore.floorId;
+    docStore.transact((p) => {
+      const fl = M.findFloor(p, fid);
+      if (fl) fl.outline = picked;
+    });
+    editorStore.toast(`Outline set (${picked.length} corners)`);
+    this.reset();
+    setTool("select");
+  }
+
+  private reset(): void {
+    this.picked = [];
+    overlayStore.update((s) => {
+      s.outlineDraft = null;
+      s.snapPreview = null;
+    });
+  }
+
+  private stepBack(): boolean {
+    if (!this.picked.length) return false;
+    this.picked.pop();
+    this.syncDraft();
+    return true;
+  }
+
+  onRightDown(_e: PointerInfo): void {
+    this.stepBack();
+  }
+
+  handleUndo(): boolean {
+    return this.stepBack();
+  }
+
+  onKey(e: KeyboardEvent): boolean {
+    if (e.key === "Enter") {
+      if (this.picked.length >= 3) this.commit();
+      else editorStore.toast("Pick at least 3 corners first");
+      return true;
+    }
+    if (e.key === "Escape" && this.picked.length) {
+      this.reset();
+      return true;
+    }
+    return false;
+  }
+
+  onUp(_e: PointerInfo): void {}
+
+  deactivate(): void {
+    this.reset();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pan tool — the router treats it like a held spacebar; nothing to do here.
+// ---------------------------------------------------------------------------
+
+class PanTool implements Tool {
+  onDown(_e: PointerInfo): void {}
+  onMove(_e: PointerInfo): void {}
+  onUp(_e: PointerInfo): void {}
+  deactivate(): void {}
+}
+
+// ---------------------------------------------------------------------------
 // Calibrate tool
 // ---------------------------------------------------------------------------
 
@@ -639,10 +757,12 @@ class CalibrateTool implements Tool {
 
 export const tools: Record<ToolId, Tool> = {
   select: new SelectTool(),
+  pan: new PanTool(),
   wall: new ChainTool("walls"),
   path: new ChainTool("nav"),
   poi: new PoiTool(),
   room: new RoomTool(),
+  outline: new OutlineTool(),
   calibrate: new CalibrateTool(),
 };
 
@@ -655,6 +775,7 @@ const TOOL_LAYERS: Partial<Record<ToolId, LayerId>> = {
   path: "nav",
   poi: "pois",
   room: "walls",
+  outline: "walls",
 };
 
 export function setTool(t: ToolId): void {
@@ -816,7 +937,10 @@ export const router = {
   panning: null as null | { pointerId: number; last: M.Vec2 },
 
   onPointerDown(e: PointerEvent, info: PointerInfo): void {
-    if (e.button === 1 || (e.button === 0 && editorStore.spaceDown)) {
+    if (
+      e.button === 1 ||
+      (e.button === 0 && (editorStore.spaceDown || editorStore.tool === "pan"))
+    ) {
       this.panning = { pointerId: e.pointerId, last: info.screen };
       return;
     }
@@ -855,7 +979,18 @@ export const router = {
   },
 
   onWheel(e: WheelEvent, screen: M.Vec2): void {
-    zoomAt(screen, Math.exp(-e.deltaY * 0.0015));
+    // Figma-style: plain scroll pans (two-finger trackpad navigation), pinch
+    // (ctrlKey) or ⌘+scroll zooms to the cursor.
+    if (e.ctrlKey) {
+      zoomAt(screen, Math.exp(-e.deltaY * 0.01)); // pinch deltas are small
+    } else if (e.metaKey) {
+      zoomAt(screen, Math.exp(-e.deltaY * 0.0015));
+    } else {
+      overlayStore.update((s) => {
+        s.viewport.x -= e.deltaX;
+        s.viewport.y -= e.deltaY;
+      });
+    }
   },
 
   onDoubleClick(info: PointerInfo): void {
