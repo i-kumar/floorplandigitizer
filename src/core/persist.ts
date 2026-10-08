@@ -5,6 +5,7 @@ import {
   emptyGraph,
   type Project,
 } from "./model";
+import { importMapJson } from "./interchange";
 import { docStore, editorStore } from "./store";
 
 const DB_NAME = "floorplan-tool";
@@ -87,6 +88,12 @@ export function validateProject(obj: unknown): Project {
     if (!Array.isArray(f.outline) || !f.outline.every((x) => typeof x === "string")) {
       f.outline = null;
     }
+    if (
+      f.expectedImageSize &&
+      !(typeof f.expectedImageSize.width === "number" && typeof f.expectedImageSize.height === "number")
+    ) {
+      delete f.expectedImageSize;
+    }
   }
   return p;
 }
@@ -154,11 +161,32 @@ export function saveProjectFile(): void {
   download(`${name}.floorplan.json`, new Blob([JSON.stringify(p)], { type: "application/json" }));
 }
 
+/** Accepts a .floorplan.json project OR an exported .map.json (rebuilt into an
+ *  editable project — minus plan images). Throws on anything else. */
+export function parseProjectFileText(text: string): {
+  project: Project;
+  warnings: string[];
+  kind: "project" | "map";
+} {
+  const obj = JSON.parse(text) as { version?: unknown };
+  if (obj && typeof obj === "object" && obj.version === 1) {
+    return { project: validateProject(obj), warnings: [], kind: "project" };
+  }
+  const { project, warnings } = importMapJson(obj);
+  return { project, warnings, kind: "map" };
+}
+
 /** Parses + validates, then replaces the document. Throws (without touching state) on bad files. */
 export async function loadProjectFile(file: File): Promise<void> {
-  const text = await file.text();
-  const project = validateProject(JSON.parse(text));
+  const { project, warnings, kind } = parseProjectFileText(await file.text());
   docStore.replace(project);
+  if (kind === "map") {
+    editorStore.toast(
+      "Rebuilt an editable project from exported map JSON — re-import each floor's plan image (traced geometry is kept)",
+    );
+  }
+  for (const w of warnings.slice(0, 4)) editorStore.toast(w);
+  if (warnings.length > 4) editorStore.toast(`…and ${warnings.length - 4} more warnings`);
 }
 
 export function downloadJson(filename: string, json: unknown): void {

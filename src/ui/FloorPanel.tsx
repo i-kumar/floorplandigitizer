@@ -4,6 +4,8 @@ import { useRef, useState } from "react";
 import { docStore, editorStore } from "../core/store";
 import { fitView, setFloor, setTool } from "../core/tools";
 import * as M from "../core/model";
+import { mergeProjectInto } from "../core/interchange";
+import { parseProjectFileText } from "../core/persist";
 import { useDoc, useEditor } from "./hooks";
 import { loadImageFile } from "../core/pdf";
 import { PdfImportDialog } from "./PdfImportDialog";
@@ -15,14 +17,12 @@ export function applyFloorImage(floorId: string, image: M.FloorImage): boolean {
     Object.keys(floor.walls.nodes).length > 0 ||
     Object.keys(floor.nav.nodes).length > 0 ||
     Object.keys(floor.pois).length > 0;
+  // A recovered project has no image but remembers the raster it was traced on.
+  const ref = floor.image ?? floor.expectedImageSize ?? null;
   let rescale = false;
-  if (
-    floor.image &&
-    hasGeometry &&
-    (floor.image.width !== image.width || floor.image.height !== image.height)
-  ) {
-    const ow = floor.image.width;
-    const oh = floor.image.height;
+  if (ref && hasGeometry && (ref.width !== image.width || ref.height !== image.height)) {
+    const ow = ref.width;
+    const oh = ref.height;
     rescale = window.confirm(
       `This floor was traced over a ${ow}×${oh}px image; the new one is ` +
         `${image.width}×${image.height}px.\n\n` +
@@ -38,17 +38,17 @@ export function applyFloorImage(floorId: string, image: M.FloorImage): boolean {
       if (!keep) return false;
     }
   }
-  const old = floor.image;
   docStore.transact((p) => {
     const fl = M.findFloor(p, floorId);
     if (!fl) return;
-    if (rescale && old) {
-      M.rescaleFloorGeometry(fl, image.width / old.width, image.height / old.height);
+    if (rescale && ref) {
+      M.rescaleFloorGeometry(fl, image.width / ref.width, image.height / ref.height);
     }
     fl.image = image;
+    delete fl.expectedImageSize;
   });
-  if (rescale && old && floor.pxPerMeter != null) {
-    const uniform = Math.abs(image.width / old.width - image.height / old.height) < 1e-6;
+  if (rescale && ref && floor.pxPerMeter != null) {
+    const uniform = Math.abs(image.width / ref.width - image.height / ref.height) < 1e-6;
     if (!uniform) editorStore.toast("Aspect ratio changed — calibration cleared, re-run it");
   }
   if (floorId === editorStore.floorId) fitView();
@@ -59,6 +59,7 @@ export function FloorPanel() {
   const doc = useDoc();
   const editor = useEditor();
   const fileRef = useRef<HTMLInputElement>(null);
+  const mergeRef = useRef<HTMLInputElement>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
   const [pdfFile, setPdfFile] = useState<File | null>(null);
@@ -77,6 +78,23 @@ export function FloorPanel() {
       }
     } catch (err) {
       editorStore.toast(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const handleMergeFile = async (file: File) => {
+    try {
+      const { project: source, warnings } = parseProjectFileText(await file.text());
+      const firstAdded = source.floors[0]?.id;
+      docStore.transact((p) => mergeProjectInto(p, source));
+      if (firstAdded) setFloor(firstAdded);
+      editorStore.toast(
+        `Added ${source.floors.length} floor${source.floors.length === 1 ? "" : "s"} from ${file.name}`,
+      );
+      for (const w of warnings.slice(0, 4)) editorStore.toast(w);
+    } catch (err) {
+      editorStore.toast(
+        `Couldn't add floors: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   };
 
@@ -210,6 +228,30 @@ export function FloorPanel() {
               : ""}
           </div>
         )}
+        {!current?.image && current?.expectedImageSize && (
+          <div className="muted small">
+            traced on a {current.expectedImageSize.width}×{current.expectedImageSize.height}px
+            plan — re-import it to see the underlay
+          </div>
+        )}
+        <button
+          className="wide"
+          title="Append every floor from another .floorplan.json or exported .map.json into this project"
+          onClick={() => mergeRef.current?.click()}
+        >
+          Add floors from another file…
+        </button>
+        <input
+          ref={mergeRef}
+          type="file"
+          accept=".json,application/json"
+          hidden
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (file) void handleMergeFile(file);
+          }}
+        />
       </div>
 
       <div className="panel-section">

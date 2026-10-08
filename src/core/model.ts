@@ -74,6 +74,11 @@ export interface Floor {
    *  follows wall edits and tolerates gaps in the wall graph. Nulled when it
    *  drops below 3 existing nodes. */
   outline: NodeId[] | null;
+  /** Set when the project was rebuilt from exported map JSON (which carries no
+   *  plan images): the raster size the geometry was traced on, so re-importing
+   *  the plan can offer a proportional rescale if the new raster differs.
+   *  Treated as immutable; cleared when an image is set. */
+  expectedImageSize?: { width: number; height: number };
 }
 
 export type LinkKind = "stairs" | "elevator" | "escalator";

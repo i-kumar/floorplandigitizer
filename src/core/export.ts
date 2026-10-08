@@ -202,8 +202,10 @@ function exportFloor(
     id: f.id,
     name: f.name,
     pxPerMeter: f.pxPerMeter,
-    width: f.image?.width ?? null,
-    height: f.image?.height ?? null,
+    // expectedImageSize keeps extents alive across an export→import round-trip
+    // of a recovered project whose images haven't been re-attached yet
+    width: f.image?.width ?? f.expectedImageSize?.width ?? null,
+    height: f.image?.height ?? f.expectedImageSize?.height ?? null,
     walls,
     nav: { nodes: navNodes, edges: navEdges },
     pois,

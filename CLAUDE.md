@@ -33,7 +33,14 @@ react-dom, pdfjs-dist. No state/canvas/id libraries — keep it that way.
   global actions (setTool/setFloor/performUndo/deleteSelection/fitView)
 - `renderer.ts` — canvas drawing, rAF-coalesced, subscribes to all 3 stores
 - `export.ts` — pure `buildExport(project) → { json, warnings }`
-- `persist.ts` — IndexedDB autosave, .floorplan.json save/load, validateProject
+- `persist.ts` — IndexedDB autosave, .floorplan.json save/load, validateProject,
+  `parseProjectFileText` (dispatches project files vs exported map JSON)
+- `interchange.ts` — `importMapJson` (rebuild an editable Project from exported
+  map JSON: welds wall segments back into shared nodes by rounded coords,
+  preserves nav/POI/room ids, mints wall ids under a fresh prefix, records
+  `floor.expectedImageSize` from width/height) and `mergeProjectInto` (append
+  another project's floors; validates id collisions BEFORE mutating, so it's
+  transact-safe)
 - `pdf.ts` — pdfjs rasterization (worker via Vite `?url` import)
 - `shortcuts.ts` — global keydown map (active tool gets first refusal)
 - `colors.ts` — deterministic room/POI-type colors (renderer + dialogs)
@@ -128,7 +135,11 @@ via `useSyncExternalStore`, `useEscape` for dialogs).
 - Rasterization is 300 DPI capped at 8000px long edge (`pdf.ts`). Coordinates
   are tied to raster dims, so changing these only affects NEW imports;
   `rescaleFloorGeometry` + the `applyFloorImage` confirm flow handle
-  re-imports at different resolutions.
+  re-imports at different resolutions. `applyFloorImage` compares against
+  `floor.image ?? floor.expectedImageSize` — the latter is set by map-JSON
+  recovery (which has no images) and cleared once an image lands.
+- Export→import round-trip is a tested fixed point (interchange.test.ts):
+  keep nav/POI/room ids and coordinate rounding stable or recovery breaks.
 
 ## Verification
 

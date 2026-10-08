@@ -66,14 +66,27 @@ npm run build    # type-check + production build
 9. **Export (Ctrl/Cmd+E)** — validation warnings (disconnected nav network, orphan
    nodes, broken rooms or outline, dangling links…) then download the map JSON.
 
-## Sharing work
+## Sharing, recovery, and merging
 
 **Save (Ctrl/Cmd+S)** downloads `<building>.floorplan.json` with everything
 embedded — plan images, walls, rooms, nav, links, calibration. Send that file to
 anyone; they run the tool and **Open (Ctrl/Cmd+O)** it (drag-and-drop onto the
 canvas also works). Autosave (IndexedDB) is per-browser and separate from these
-files. Ids carry a random per-project prefix, so separately digitized floors and
-buildings can be combined later without collisions.
+files.
+
+**Lost the project file but kept an export?** Open accepts an exported
+`.map.json` too: it rebuilds an editable project from it — walls (endpoints
+welded back into shared nodes), nav graph with its original ids, POIs and their
+links, rooms, outlines, and calibration all survive; only the plan images are
+missing (re-import each floor's PDF/image — the panel shows the raster size it
+was traced on, and a mismatched size offers a proportional rescale).
+
+**Floors panel → *Add floors from another file…*** appends every floor from a
+second `.floorplan.json` or `.map.json` into the current project (with its POIs,
+rooms, images, and internal links) — for adding a separately digitized floor or
+combining two people's work. Ids carry a random per-project prefix, so distinct
+files never collide; connect the new floors with stairs/elevator/escalator links
+afterwards.
 
 ## Snapping
 
