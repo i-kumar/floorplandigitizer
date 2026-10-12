@@ -73,7 +73,9 @@ npm run build    # type-check + production build
    create the room + its centroid POI, type its name (the name box is focused
    and selected, so you can type room numbers back to back). A room is just a
    POI with an area: its type defaults to `room` but can be any POI type
-   (stairs, escalator, restroom_female, …) from the same list.
+   (stairs, escalator, restroom_female, …) from the same list. Type **solid**
+   marks a block that should be drawn as filled-in wall (pillars, shafts) — it
+   renders opaque on the canvas and exports as `rooms[].type: "solid"`.
 7. **Place POIs (E)** — click to drop; pick type/name in the Inspector. Types are
    a **fixed list** (`src/core/vocab.ts`) so every plan in the organization uses
    the same vocabulary; POIs are color-coded by type on the canvas. Placement
@@ -234,7 +236,7 @@ Notes for the consuming app:
   A door without `line` is a legacy point door (export warns). `access` is an
   open enum — today only `emergency_only`; treat unknown values as restricted.
 - POI `type` (and therefore `rooms[].type`) comes from the single fixed list in
-  `src/core/vocab.ts` (room, door, entrance, stairs, elevator, escalator,
+  `src/core/vocab.ts` (room, solid, door, entrance, stairs, elevator, escalator,
   restroom_male, restroom_female, restroom_neutral, drinking_fountain,
   vending_machine, food, printer, info_desk, other). Values
   outside it only appear in files from older versions.
@@ -244,7 +246,8 @@ Notes for the consuming app:
   floor) to represent the whole building on a map.
 - `kind` on edges/walls is an open string tag (`door`, `window`, `accessible`, …).
 - `rooms[].type` mirrors the room-POI's type (`"room"` unless changed in the
-  room inspector) — no need to join through `poiId` for it.
+  room inspector) — no need to join through `poiId` for it. `"solid"` means
+  "draw this polygon as filled-in wall" (not a navigable space).
 - Ids are stable and carry a random per-session prefix, so separately digitized
   buildings/floors never collide when merged; never renumber them.
 - Treat `interFloorEdges` with `oneWay: true` as directed (escalators).

@@ -16,6 +16,7 @@ export interface VocabEntry {
 
 export const POI_TYPES: VocabEntry[] = [
   { id: "room", label: "Room", color: "#7e57c2" },
+  { id: "solid", label: "Solid (filled-in wall)", color: "#263238" },
   { id: "door", label: "Door", color: "#8d6e63" },
   { id: "entrance", label: "Entrance", color: "#e53935" },
   { id: "stairs", label: "Stairs", color: "#5c6bc0" },
@@ -43,10 +44,14 @@ export const EXTERNAL_LINK_KINDS = ["door", "bridge", "tunnel", "path"];
 
 export const isPoiType = (t: string): boolean => POI_TYPES.some((e) => e.id === t);
 
+/** Area-only types: they describe a traced region, never a lone point. "solid"
+ *  marks a block the map should draw as filled-in wall (pillars, shafts, chases). */
+export const AREA_ONLY_TYPES = new Set(["room", "solid"]);
+
 /** The choices offered for a given POI — the one list, minus what can't apply:
- *  an area can't be a door (doors are wall spans) and a lone point isn't a room. */
+ *  an area can't be a door (doors are wall spans) and a lone point isn't an area. */
 export function typeOptionsFor(poi: Pick<Poi, "roomId">): VocabEntry[] {
-  return POI_TYPES.filter((e) => (poi.roomId ? e.id !== "door" : e.id !== "room"));
+  return POI_TYPES.filter((e) => (poi.roomId ? e.id !== "door" : !AREA_ONLY_TYPES.has(e.id)));
 }
 
 export function vocabLabel(id: string): string {

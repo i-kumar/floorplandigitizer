@@ -5,7 +5,7 @@ import { snap, SNAP, type SnapResult } from "./snap";
 import { hitTest } from "./hit";
 import { canonicalLoopKey, faceAtPoint, traceFaces, type Face } from "./rooms";
 import { dist, polygonCentroid, projectPointOnSegment } from "./geometry";
-import { isPoiType } from "./vocab";
+import { AREA_ONLY_TYPES, isPoiType } from "./vocab";
 import {
   docStore,
   editorStore,
@@ -491,9 +491,10 @@ class PoiTool implements Tool {
       const fl = M.findFloor(p, fid)!;
       pid = M.newId(p, "p");
       const last = editorStore.lastPoiType;
-      // Doors have their own tool (they span a wall) and rooms their own; a
-      // plain point defaults to "other".
-      const type = last && isPoiType(last) && last !== "door" && last !== "room" ? last : "other";
+      // Doors have their own tool (they span a wall) and area types their own
+      // (Room tool); a plain point defaults to "other".
+      const type =
+        last && isPoiType(last) && last !== "door" && !AREA_ONLY_TYPES.has(last) ? last : "other";
       fl.pois[pid] = { id: pid, x: res.point.x, y: res.point.y, type };
     });
     editorStore.update((s) => {

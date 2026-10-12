@@ -135,19 +135,21 @@ export class Renderer {
       }
     }
 
-    // 2. room fills (belong visually to the walls layer)
+    // 2. room fills (belong visually to the walls layer). A "solid" room is a
+    // block of filled-in wall: drawn opaque in the wall color, no label.
     ctx.globalAlpha = 1;
     for (const room of Object.values(floor.rooms)) {
       const pts = room.loop.map((id) => floor.walls.nodes[id]).filter(Boolean);
       if (pts.length < 3 || pts.length !== room.loop.length) continue;
-      const color = roomColor(room.id);
+      const solid = floor.pois[room.poiId]?.type === "solid";
+      const color = solid ? COLORS.wall : roomColor(room.id);
       ctx.beginPath();
       this.tracePath(ctx, pts, true);
       ctx.fillStyle = color;
-      ctx.globalAlpha = 0.13 * wallsAlpha;
+      ctx.globalAlpha = (solid ? 0.8 : 0.13) * wallsAlpha;
       ctx.fill();
       ctx.globalAlpha = 1;
-      if (layer === "walls" && z > 0.15) {
+      if (!solid && layer === "walls" && z > 0.15) {
         ctx.fillStyle = color;
         ctx.globalAlpha = 0.85;
         ctx.font = `${13 / z}px system-ui, sans-serif`;
