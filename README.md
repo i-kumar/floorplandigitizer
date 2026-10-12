@@ -21,8 +21,18 @@ as `.floorplan.json` files (plan images embedded).
 
 ## Run it
 
+Fresh clone, macOS/Linux — one command installs Node (via nvm, if missing) and
+the packages, then checks the install:
+
 ```bash
-npm install
+./setup.sh          # or ./setup.sh --dev to start the app right away
+```
+
+Windows: install Node LTS from <https://nodejs.org>, then `npm install`.
+
+Day to day:
+
+```bash
 npm run dev      # → http://localhost:5173
 npm test         # unit tests (geometry, snapping, rooms, model, export, merge, undo)
 npm run build    # type-check + production build
