@@ -1,7 +1,7 @@
 // Document model: types, factories, and all graph/project mutation operations.
 // Everything here is plain data + pure-ish functions that mutate in place; they are
 // only ever called inside docStore transactions/gestures.
-import { segSegIntersection } from "./geometry";
+import { dist, segSegIntersection } from "./geometry";
 
 export type NodeId = string;
 export type PoiId = string;
@@ -41,6 +41,23 @@ export interface Poi {
   name?: string;
   roomId?: RoomId; // set on the auto-created POI of a room
   navNodeId?: NodeId; // set when a nav node was created snapped onto this POI
+  /** Door extent: ordered wall node ids (>= 2) along one wall; every consecutive
+   *  pair must be a wall edge. x/y is kept equal to the midpoint of the first and
+   *  last node by syncDoorPois (stored, not derived, so everything that reads
+   *  poi.x/y keeps working). Patched on wall split/merge/delete like room loops;
+   *  when it stops being a valid path the POI degrades to a plain point. */
+  span?: NodeId[];
+  /** Door access restriction; undefined = normal. Open enum (see vocab.ts). */
+  access?: "emergency_only";
+  /** This POI connects to another building; the backend linker joins the two
+   *  sides by (building, key). See README "Linking buildings". */
+  externalLink?: ExternalLink;
+}
+
+export interface ExternalLink {
+  building: string; // the OTHER building's buildingId
+  key: string; // shared key agreed by both sides; unique per building pair
+  kind?: string; // door (default) | bridge | tunnel | path | ...
 }
 
 // Boundary loop of wall node ids, in face order (>= 3). The polygon is resolved
@@ -92,25 +109,30 @@ export interface InterFloorEdge {
 
 export interface Project {
   version: 1;
-  building: string;
+  building: string; // display name
+  /** Stable slug identifying the building across files and exports ("" until
+   *  set). The backend linker matches externalLink.building against it. */
+  buildingId: string;
   floors: Floor[]; // array order = switcher order
   interFloorEdges: InterFloorEdge[];
-  poiTypes: string[];
-  idPrefix: string; // random per project, so ids never collide across separately-created files
+  /** Prefix for ids minted in THIS editing session. Re-minted on every file
+   *  Open (persist.loadProjectFile), so two people who fork the same shared file
+   *  never mint colliding ids; existing ids are never renumbered. */
+  idPrefix: string;
   idCounter: number;
 }
 
-export const DEFAULT_POI_TYPES = [
-  "room",
-  "door",
-  "drinking_fountain",
-  "vending_machine",
-  "restroom",
-  "exit",
-];
-
 export const edgeKey = (a: NodeId, b: NodeId): string =>
   a < b ? `${a}|${b}` : `${b}|${a}`;
+
+/** Normalizes a building id: lowercase, [a-z0-9-], no leading/trailing dashes. */
+export function buildingSlug(v: string): string {
+  return v
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
 
 export function newId(p: Project, prefix: string): string {
   p.idCounter += 1;
@@ -135,10 +157,11 @@ export function newFloor(p: Project, name: string): Floor {
   };
 }
 
-function randomIdPrefix(): string {
+/** 6 base36 chars ≈ 2.2 billion — collisions between sessions are negligible. */
+export function mintIdPrefix(len = 6): string {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
   let s = "";
-  for (let i = 0; i < 4; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  for (let i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)];
   return s;
 }
 
@@ -146,10 +169,10 @@ export function newProject(): Project {
   const p: Project = {
     version: 1,
     building: "Building",
+    buildingId: "",
     floors: [],
     interFloorEdges: [],
-    poiTypes: [...DEFAULT_POI_TYPES],
-    idPrefix: randomIdPrefix(),
+    idPrefix: mintIdPrefix(),
     idCounter: 0,
   };
   p.floors.push(newFloor(p, "Floor 1"));
@@ -303,6 +326,74 @@ function patchLoopOnSplit(loop: NodeId[], a: NodeId, b: NodeId, id: NodeId): voi
   }
 }
 
+// --- door spans (open paths along a wall) ---------------------------------
+
+/** Open-path analogue of loopEdgesValid: >= 2 distinct existing wall nodes with
+ *  every consecutive pair joined by a wall edge. */
+export function pathEdgesValid(floor: Floor, path: NodeId[]): boolean {
+  if (path.length < 2) return false;
+  if (new Set(path).size !== path.length) return false;
+  for (let i = 0; i + 1 < path.length; i++) {
+    const a = path[i];
+    const b = path[i + 1];
+    if (!floor.walls.nodes[a] || !floor.walls.nodes[b]) return false;
+    if (!floor.walls.edges[edgeKey(a, b)]) return false;
+  }
+  return true;
+}
+
+/** Consecutive-duplicate removal for open paths. Unlike dedupeLoop it never
+ *  collapses first/last — a path is not a cycle; a folded [a,b,a] stays invalid. */
+function dedupePath(path: NodeId[]): NodeId[] {
+  const out: NodeId[] = [];
+  for (const id of path) if (out[out.length - 1] !== id) out.push(id);
+  return out;
+}
+
+/** No wrap-around pair, unlike patchLoopOnSplit. */
+function patchPathOnSplit(path: NodeId[], a: NodeId, b: NodeId, id: NodeId): void {
+  for (let i = 0; i + 1 < path.length; i++) {
+    const u = path[i];
+    const v = path[i + 1];
+    if ((u === a && v === b) || (u === b && v === a)) {
+      path.splice(i + 1, 0, id);
+      return;
+    }
+  }
+}
+
+/** Keeps door POIs consistent with the wall graph. A span that is no longer a
+ *  valid wall path is dropped — the POI survives as a plain point at its last
+ *  position (never deleted, so a wall edit can't lose names/links); valid spans
+ *  re-center x/y on the midpoint of their end nodes. Returns the ids that lost
+ *  their span. Called by every wall wrapper below. */
+export function syncDoorPois(floor: Floor): PoiId[] {
+  const degraded: PoiId[] = [];
+  for (const poi of Object.values(floor.pois)) {
+    if (!poi.span) continue;
+    if (!pathEdgesValid(floor, poi.span)) {
+      delete poi.span;
+      degraded.push(poi.id);
+      continue;
+    }
+    const a = floor.walls.nodes[poi.span[0]];
+    const b = floor.walls.nodes[poi.span[poi.span.length - 1]];
+    poi.x = (a.x + b.x) / 2;
+    poi.y = (a.y + b.y) / 2;
+  }
+  return degraded;
+}
+
+/** The door POI whose span runs along this wall edge, if any. */
+export function doorPoiForEdge(floor: Floor, key: string): Poi | undefined {
+  for (const poi of Object.values(floor.pois)) {
+    const s = poi.span;
+    if (!s) continue;
+    for (let i = 0; i + 1 < s.length; i++) if (edgeKey(s[i], s[i + 1]) === key) return poi;
+  }
+  return undefined;
+}
+
 export function splitWallEdge(floor: Floor, key: string, at: Vec2, id: NodeId): GraphNode | null {
   const e = floor.walls.edges[key];
   if (!e) return null;
@@ -311,6 +402,10 @@ export function splitWallEdge(floor: Floor, key: string, at: Vec2, id: NodeId): 
   if (!n) return null;
   for (const r of Object.values(floor.rooms)) patchLoopOnSplit(r.loop, a, b, id);
   if (floor.outline) patchLoopOnSplit(floor.outline, a, b, id);
+  for (const poi of Object.values(floor.pois)) {
+    if (poi.span) patchPathOnSplit(poi.span, a, b, id);
+  }
+  syncDoorPois(floor);
   return n;
 }
 
@@ -322,8 +417,12 @@ export function mergeWallNodes(floor: Floor, keep: NodeId, drop: NodeId): void {
   if (floor.outline) {
     floor.outline = dedupeLoop(floor.outline.map((x) => (x === drop ? keep : x)));
   }
+  for (const poi of Object.values(floor.pois)) {
+    if (poi.span) poi.span = dedupePath(poi.span.map((x) => (x === drop ? keep : x)));
+  }
   sweepRooms(floor);
   sweepOutline(floor);
+  syncDoorPois(floor);
 }
 
 export function deleteWallNode(floor: Floor, id: NodeId): void {
@@ -334,8 +433,12 @@ export function deleteWallNode(floor: Floor, id: NodeId): void {
   if (floor.outline) {
     floor.outline = dedupeLoop(floor.outline.filter((x) => !removed.has(x)));
   }
+  for (const poi of Object.values(floor.pois)) {
+    if (poi.span) poi.span = dedupePath(poi.span.filter((x) => !removed.has(x)));
+  }
   sweepRooms(floor);
   sweepOutline(floor);
+  syncDoorPois(floor);
 }
 
 export function deleteWallEdge(floor: Floor, key: string): void {
@@ -346,8 +449,22 @@ export function deleteWallEdge(floor: Floor, key: string): void {
   if (floor.outline) {
     floor.outline = dedupeLoop(floor.outline.filter((x) => !removed.has(x)));
   }
+  for (const poi of Object.values(floor.pois)) {
+    if (poi.span) poi.span = dedupePath(poi.span.filter((x) => !removed.has(x)));
+  }
   sweepRooms(floor);
   sweepOutline(floor);
+  syncDoorPois(floor);
+}
+
+/** The only way to move a wall node — door POI spans re-center on it. Never
+ *  write walls.nodes[id].x/y directly. */
+export function moveWallNode(floor: Floor, id: NodeId, pt: Vec2): void {
+  const n = floor.walls.nodes[id];
+  if (!n) return;
+  n.x = pt.x;
+  n.y = pt.y;
+  syncDoorPois(floor);
 }
 
 // ---------------------------------------------------------------------------
@@ -380,7 +497,7 @@ export function deleteNavEdge(p: Project, floor: Floor, key: string): void {
   cleanupNavRefs(p, floor.id, deleteEdgeRaw(floor.nav, key));
 }
 
-function sameLink(a: InterFloorEdge, b: InterFloorEdge): boolean {
+export function sameLink(a: InterFloorEdge, b: InterFloorEdge): boolean {
   return (
     a.kind === b.kind &&
     a.oneWay === b.oneWay &&
@@ -412,7 +529,8 @@ export function mergeNavNodes(p: Project, floor: Floor, keep: NodeId, drop: Node
 
 /** Adds the segment a—b, splitting BOTH the new segment and every existing edge
  *  it properly crosses, with a shared node at each intersection. Wall splits
- *  patch room loops. Shared endpoints / end-touches are not crossings. */
+ *  patch room loops. Shared endpoints / end-touches are not crossings. Returns
+ *  the node chain a … b along the drawn segment ([] if nothing was drawn). */
 export function addEdgeWithIntersections(
   p: Project,
   floor: Floor,
@@ -420,11 +538,11 @@ export function addEdgeWithIntersections(
   a: NodeId,
   b: NodeId,
   kind?: string,
-): void {
+): NodeId[] {
   const g = layer === "walls" ? floor.walls : floor.nav;
   const A = g.nodes[a];
   const B = g.nodes[b];
-  if (!A || !B || a === b) return;
+  if (!A || !B || a === b) return [];
 
   const crossings: Array<{ key: string; point: Vec2; t: number }> = [];
   for (const [key, e] of Object.entries(g.edges)) {
@@ -438,7 +556,7 @@ export function addEdgeWithIntersections(
 
   if (!crossings.length) {
     addEdge(g, a, b, kind);
-    return;
+    return [a, b];
   }
 
   crossings.sort((x, y) => x.t - y.t);
@@ -453,6 +571,75 @@ export function addEdgeWithIntersections(
   for (let i = 0; i + 1 < chain.length; i++) {
     addEdge(g, chain[i], chain[i + 1], kind);
   }
+  return chain;
+}
+
+// ---------------------------------------------------------------------------
+// Doors: a door is a wall path tagged kind:"door" plus exactly one POI spanning it
+// ---------------------------------------------------------------------------
+
+/** Makes `span` a door: tags every span edge kind:"door" (also when the edge
+ *  pre-existed untagged) and creates its single door POI, x/y at the span
+ *  midpoint. Returns the existing POI if one already spans exactly this path
+ *  (either direction); null if the span isn't a valid wall path. Shared by the
+ *  Door tool, the Wall tool's door mode, and the Edge inspector. */
+export function createDoorPoi(p: Project, floor: Floor, span: NodeId[]): Poi | null {
+  if (!pathEdgesValid(floor, span)) return null;
+  const n = span.length;
+  const same = (s: NodeId[]) =>
+    s.length === n &&
+    (s.every((id, i) => id === span[i]) || s.every((id, i) => id === span[n - 1 - i]));
+  for (const poi of Object.values(floor.pois)) if (poi.span && same(poi.span)) return poi;
+  for (let i = 0; i + 1 < n; i++) floor.walls.edges[edgeKey(span[i], span[i + 1])].kind = "door";
+  const a = floor.walls.nodes[span[0]];
+  const b = floor.walls.nodes[span[n - 1]];
+  const id = newId(p, "p");
+  const poi: Poi = {
+    id,
+    x: (a.x + b.x) / 2,
+    y: (a.y + b.y) / 2,
+    type: "door",
+    span: [...span],
+  };
+  floor.pois[id] = poi;
+  return poi;
+}
+
+/** Door-tool cut: carves the sub-segment t1..t2 (parameters along the edge, a→b)
+ *  out of a wall edge — splitting at each end unless it lies within `endTol` px
+ *  of that end's node, in which case the node itself is reused — and makes it a
+ *  door. Leftover pieces keep the original edge kind. Returns null when the door
+ *  would be shorter than endTol. */
+export function insertDoorOnEdge(
+  p: Project,
+  floor: Floor,
+  key: string,
+  t1: number,
+  t2: number,
+  endTol: number,
+): Poi | null {
+  const e = floor.walls.edges[key];
+  if (!e) return null;
+  const A = floor.walls.nodes[e.a];
+  const B = floor.walls.nodes[e.b];
+  if (!A || !B) return null;
+  const len = dist(A, B);
+  const tLo = Math.max(0, Math.min(t1, t2));
+  const tHi = Math.min(1, Math.max(t1, t2));
+  if ((tHi - tLo) * len < endTol) return null;
+  const at = (t: number): Vec2 => ({ x: A.x + (B.x - A.x) * t, y: A.y + (B.y - A.y) * t });
+  const { a, b } = e;
+  let n1 = a;
+  if (tLo * len > endTol) {
+    n1 = newId(p, "n");
+    splitWallEdge(floor, key, at(tLo), n1);
+  }
+  let n2 = b;
+  if ((1 - tHi) * len > endTol) {
+    n2 = newId(p, "n");
+    splitWallEdge(floor, edgeKey(n1, b), at(tHi), n2);
+  }
+  return createDoorPoi(p, floor, [n1, n2]);
 }
 
 // ---------------------------------------------------------------------------
@@ -528,7 +715,16 @@ export function cloneProject(p: Project): Project {
       image: f.image,
       walls: cloneGraph(f.walls),
       nav: cloneGraph(f.nav),
-      pois: Object.fromEntries(Object.entries(f.pois).map(([id, poi]) => [id, { ...poi }])),
+      pois: Object.fromEntries(
+        Object.entries(f.pois).map(([id, poi]) => [
+          id,
+          {
+            ...poi,
+            ...(poi.span ? { span: [...poi.span] } : {}),
+            ...(poi.externalLink ? { externalLink: { ...poi.externalLink } } : {}),
+          },
+        ]),
+      ),
       rooms: Object.fromEntries(
         Object.entries(f.rooms).map(([id, r]) => [id, { ...r, loop: [...r.loop] }]),
       ),
@@ -539,6 +735,5 @@ export function cloneProject(p: Project): Project {
       from: { ...e.from },
       to: { ...e.to },
     })),
-    poiTypes: [...p.poiTypes],
   };
 }

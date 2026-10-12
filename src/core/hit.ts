@@ -11,10 +11,21 @@ export function hitTest(floor: Floor, layer: LayerId, p: Vec2, zoom: number): It
 
   if (layer === "pois") {
     let best: Poi | null = null;
-    let bd = tolNode;
+    let bd = Infinity;
     for (const poi of Object.values(floor.pois)) {
-      const d = dist(p, poi);
-      if (d <= bd) {
+      const dc = dist(p, poi);
+      let d = dc <= tolNode ? dc : Infinity;
+      // Spanned doors are also hit anywhere along their line.
+      if (poi.span) {
+        for (let i = 0; i + 1 < poi.span.length; i++) {
+          const A = floor.walls.nodes[poi.span[i]];
+          const B = floor.walls.nodes[poi.span[i + 1]];
+          if (!A || !B) continue;
+          const dl = dist(p, projectPointOnSegment(p, A, B).point);
+          if (dl <= tolEdge) d = Math.min(d, dl);
+        }
+      }
+      if (d < bd) {
         bd = d;
         best = poi;
       }

@@ -1,6 +1,8 @@
 // Interchange: rebuild an editable Project from exported map JSON (recovery —
 // the export carries everything except plan images), and merge another
-// project's floors into the current one (multi-person / add-a-floor workflow).
+// project's floors into the current one (multi-person workflow: each person
+// traces their floor in a fork of the lead's shared file; the integrator merges
+// each fork back, replacing floors by id).
 //
 // Reconstruction notes: exported walls are flat segments with no node identity,
 // so endpoints are welded back into shared nodes by their (rounded) coordinates
@@ -14,9 +16,14 @@ import {
   newFloor,
   newId,
   newProject,
+  pathEdgesValid,
+  sameLink,
   type Floor,
+  type FloorId,
+  type InterFloorEdge,
   type LinkKind,
   type NodeId,
+  type Poi,
   type Project,
 } from "./model";
 import type { ExportJson } from "./export";
@@ -41,6 +48,7 @@ export function importMapJson(obj: unknown): MapImportResult {
   const p = newProject();
   p.floors = []; // drop the seed floor
   if (typeof src.building === "string" && src.building) p.building = src.building;
+  if (typeof src.buildingId === "string") p.buildingId = src.buildingId;
 
   for (const sf of src.floors) {
     if (!sf || typeof sf !== "object") continue;
@@ -73,6 +81,16 @@ export function importMapJson(obj: unknown): MapImportResult {
         typeof w.kind === "string" && w.kind ? w.kind : undefined,
       );
     }
+    /** Matches an exported polyline/polygon back onto welded wall nodes. */
+    const matchPoints = (pts: unknown[]): NodeId[] | null => {
+      const ids: NodeId[] = [];
+      for (const pt of pts) {
+        const id = isPair(pt) ? nodeAt.get(coordKey(pt[0], pt[1])) : undefined;
+        if (!id) return null;
+        ids.push(id);
+      }
+      return ids;
+    };
 
     // Nav graph: ids preserved verbatim.
     for (const n of sf.nav?.nodes ?? []) {
@@ -86,34 +104,47 @@ export function importMapJson(obj: unknown): MapImportResult {
       }
     }
 
-    // POIs verbatim (type/name/roomId/navNodeId all survive the export).
-    for (const poi of Array.isArray(sf.pois) ? sf.pois : []) {
-      if (!poi || typeof poi.id !== "string" || !isNum(poi.x) || !isNum(poi.y)) continue;
-      floor.pois[poi.id] = {
-        id: poi.id,
-        x: poi.x,
-        y: poi.y,
-        type: typeof poi.type === "string" && poi.type ? poi.type : "poi",
-        ...(poi.name ? { name: poi.name } : {}),
-        ...(poi.roomId ? { roomId: poi.roomId } : {}),
-        ...(poi.navNodeId ? { navNodeId: poi.navNodeId } : {}),
+    // POIs verbatim (x/y, type, name, links, access); door spans re-matched
+    // onto the welded wall nodes like room polygons are.
+    for (const sp of Array.isArray(sf.pois) ? sf.pois : []) {
+      if (!sp || typeof sp.id !== "string" || !isNum(sp.x) || !isNum(sp.y)) continue;
+      const ext = sp.externalLink;
+      const poi: Poi = {
+        id: sp.id,
+        x: sp.x,
+        y: sp.y,
+        type: typeof sp.type === "string" && sp.type ? sp.type : "poi",
+        ...(sp.name ? { name: sp.name } : {}),
+        ...(sp.roomId ? { roomId: sp.roomId } : {}),
+        ...(sp.navNodeId ? { navNodeId: sp.navNodeId } : {}),
+        ...(sp.access === "emergency_only" ? { access: "emergency_only" as const } : {}),
+        ...(ext && typeof ext.building === "string" && typeof ext.key === "string"
+          ? {
+              externalLink: {
+                building: ext.building,
+                key: ext.key,
+                ...(typeof ext.kind === "string" && ext.kind ? { kind: ext.kind } : {}),
+              },
+            }
+          : {}),
       };
+      if (Array.isArray(sp.line) && sp.line.length >= 2) {
+        const span = matchPoints(sp.line);
+        if (span && pathEdgesValid(floor, span)) poi.span = span;
+        else {
+          warnings.push(
+            `${floor.name}: door "${poi.name ?? poi.id}" didn't match the wall segments — redraw it with the Door tool (D)`,
+          );
+        }
+      }
+      floor.pois[poi.id] = poi;
     }
 
     // Rooms: match polygon vertices back to the welded wall nodes.
     for (const r of Array.isArray(sf.rooms) ? sf.rooms : []) {
       if (!r || typeof r.id !== "string" || !Array.isArray(r.polygon)) continue;
-      const loop: NodeId[] = [];
-      let ok = true;
-      for (const pt of r.polygon) {
-        const id = isPair(pt) ? nodeAt.get(coordKey(pt[0], pt[1])) : undefined;
-        if (!id) {
-          ok = false;
-          break;
-        }
-        loop.push(id);
-      }
-      if (ok && loop.length >= 3) {
+      const loop = matchPoints(r.polygon);
+      if (loop && loop.length >= 3) {
         floor.rooms[r.id] = {
           id: r.id,
           name: typeof r.name === "string" && r.name ? r.name : "Room",
@@ -131,17 +162,8 @@ export function importMapJson(obj: unknown): MapImportResult {
 
     // Outline: same vertex matching; direction is irrelevant.
     if (Array.isArray(sf.outline) && sf.outline.length >= 3) {
-      const loop: NodeId[] = [];
-      let ok = true;
-      for (const pt of sf.outline) {
-        const id = isPair(pt) ? nodeAt.get(coordKey(pt[0], pt[1])) : undefined;
-        if (!id) {
-          ok = false;
-          break;
-        }
-        loop.push(id);
-      }
-      if (ok) floor.outline = loop;
+      const loop = matchPoints(sf.outline);
+      if (loop) floor.outline = loop;
       else warnings.push(`${floor.name}: outline didn't match the wall corners — redraw it (O)`);
     }
 
@@ -166,38 +188,135 @@ export function importMapJson(obj: unknown): MapImportResult {
       warnings.push(`Dropped an inter-floor ${l?.kind ?? "stairs"} link with missing endpoints`);
     }
   }
-
-  for (const f of p.floors) {
-    for (const poi of Object.values(f.pois)) {
-      if (poi.type && !p.poiTypes.includes(poi.type)) p.poiTypes.push(poi.type);
-    }
-  }
+  // Top-level externalLinks is a derived index — the per-POI field is the source of truth.
 
   return { project: p, warnings };
 }
 
-/** Appends every floor of `source` (with its POIs, rooms, images, and internal
- *  inter-floor links) into `target`, plus a poiTypes union. Validates BEFORE
- *  mutating, so a thrown collision leaves `target` untouched — safe inside a
- *  docStore.transact. Distinct projects can't collide thanks to id prefixes;
- *  a collision means the file overlaps what's already loaded. */
-export function mergeProjectInto(target: Project, source: Project): void {
-  for (const f of source.floors) {
-    if (target.floors.some((t) => t.id === f.id)) {
-      throw new Error(`floor "${f.name}" (${f.id}) is already in this project — same file twice?`);
-    }
-  }
-  const targetNavIds = new Set(target.floors.flatMap((f) => Object.keys(f.nav.nodes)));
-  for (const f of source.floors) {
+// ---------------------------------------------------------------------------
+// Merge: bring another file's floors into this project
+// ---------------------------------------------------------------------------
+
+export interface FloorStats {
+  walls: number;
+  nav: number;
+  pois: number;
+  rooms: number;
+  image: boolean;
+}
+
+export function floorStats(f: Floor): FloorStats {
+  return {
+    walls: Object.keys(f.walls.edges).length,
+    nav: Object.keys(f.nav.nodes).length,
+    pois: Object.keys(f.pois).length,
+    rooms: Object.keys(f.rooms).length,
+    image: !!f.image,
+  };
+}
+
+export const floorHasContent = (s: FloorStats): boolean => s.walls + s.nav + s.pois + s.rooms > 0;
+
+export interface MergeRow {
+  id: FloorId;
+  name: string;
+  /** `replace`: a floor with this id is already in the target (same lineage —
+   *  typically a fork of the lead's shared file) and would be overwritten. */
+  status: "new" | "replace";
+  targetName?: string;
+  src: FloorStats;
+  dst?: FloorStats;
+  /** New floors, and replacements where the source actually has content. */
+  defaultChecked: boolean;
+}
+
+/** What `mergeProjectInto` would do, per source floor — for the merge dialog. Pure. */
+export function mergePreview(target: Project, source: Project): MergeRow[] {
+  return source.floors.map((f) => {
+    const existing = target.floors.find((t) => t.id === f.id);
+    const src = floorStats(f);
+    if (!existing) return { id: f.id, name: f.name, status: "new", src, defaultChecked: true };
+    return {
+      id: f.id,
+      name: f.name,
+      status: "replace",
+      targetName: existing.name,
+      src,
+      dst: floorStats(existing),
+      defaultChecked: floorHasContent(src),
+    };
+  });
+}
+
+export interface MergeResult {
+  added: FloorId[];
+  replaced: FloorId[];
+  /** Target links that no longer had both endpoints after the replacement. */
+  droppedLinks: number;
+}
+
+/** Brings the chosen floors of `source` into `target`: a floor whose id already
+ *  exists is REPLACED in place (same position in the floor list), others are
+ *  appended. Inter-floor links from both sides are kept when both endpoints
+ *  still exist afterwards (nav ids are stable, so links to an unchanged stairwell
+ *  survive a re-merge) and deduplicated. Validates BEFORE mutating, so a thrown
+ *  collision leaves `target` untouched — safe inside a docStore.transact. */
+export function mergeProjectInto(
+  target: Project,
+  source: Project,
+  opts: { floorIds: Set<FloorId> },
+): MergeResult {
+  const chosen = source.floors.filter((f) => opts.floorIds.has(f.id));
+  const replacing = new Set(
+    chosen.filter((f) => target.floors.some((t) => t.id === f.id)).map((f) => f.id),
+  );
+  // Ids must be unique across the floors that will coexist afterwards. Distinct
+  // sessions can't collide thanks to id prefixes; a collision means overlap.
+  const staying = target.floors.filter((t) => !replacing.has(t.id));
+  const navIds = new Set(staying.flatMap((f) => Object.keys(f.nav.nodes)));
+  const poiIds = new Set(staying.flatMap((f) => Object.keys(f.pois)));
+  for (const f of chosen) {
     for (const id of Object.keys(f.nav.nodes)) {
-      if (targetNavIds.has(id)) {
-        throw new Error(`nav node id ${id} exists in both files — they overlap`);
-      }
+      if (navIds.has(id)) throw new Error(`nav node id ${id} exists in both files — they overlap`);
+    }
+    for (const id of Object.keys(f.pois)) {
+      if (poiIds.has(id)) throw new Error(`POI id ${id} exists in both files — they overlap`);
     }
   }
-  target.floors.push(...(source.floors as Floor[]));
-  target.interFloorEdges.push(...source.interFloorEdges);
-  for (const t of source.poiTypes) {
-    if (!target.poiTypes.includes(t)) target.poiTypes.push(t);
+
+  const added: FloorId[] = [];
+  const replaced: FloorId[] = [];
+  for (const f of chosen) {
+    const i = target.floors.findIndex((t) => t.id === f.id);
+    if (i >= 0) {
+      const old = target.floors[i];
+      // A map-JSON source has no images: keep the one already attached when it
+      // matches the raster the source was traced on.
+      const sz = f.expectedImageSize;
+      if (!f.image && old.image && (!sz || (sz.width === old.image.width && sz.height === old.image.height))) {
+        f.image = old.image;
+        delete f.expectedImageSize;
+      }
+      target.floors[i] = f;
+      replaced.push(f.id);
+    } else {
+      target.floors.push(f);
+      added.push(f.id);
+    }
   }
+
+  const exists = (ref: { floor: FloorId; node: NodeId }): boolean => {
+    const fl = target.floors.find((t) => t.id === ref.floor);
+    return !!fl && !!fl.nav.nodes[ref.node];
+  };
+  const live = (e: InterFloorEdge) => exists(e.from) && exists(e.to);
+  const droppedLinks = target.interFloorEdges.filter((e) => !live(e)).length;
+  const merged: InterFloorEdge[] = [];
+  for (const e of [...target.interFloorEdges, ...source.interFloorEdges]) {
+    if (!live(e)) continue;
+    if (merged.some((o) => sameLink(o, e))) continue;
+    merged.push(e);
+  }
+  target.interFloorEdges = merged;
+  return { added, replaced, droppedLinks };
 }

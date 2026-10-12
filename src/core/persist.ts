@@ -1,10 +1,6 @@
 // Persistence: IndexedDB autosave (localStorage's ~5MB quota can't hold embedded
 // floor plan images) + explicit .floorplan.json save/load.
-import {
-  DEFAULT_POI_TYPES,
-  emptyGraph,
-  type Project,
-} from "./model";
+import { emptyGraph, mintIdPrefix, pathEdgesValid, type Project } from "./model";
 import { importMapJson } from "./interchange";
 import { docStore, editorStore } from "./store";
 
@@ -66,9 +62,10 @@ export function validateProject(obj: unknown): Project {
   if (p.version !== 1) throw new Error(`Unsupported project version: ${String(p.version)}`);
   if (!Array.isArray(p.floors) || p.floors.length === 0) throw new Error("Project has no floors");
   if (typeof p.building !== "string") p.building = "Building";
+  if (typeof p.buildingId !== "string") p.buildingId = "";
   if (!Array.isArray(p.interFloorEdges)) p.interFloorEdges = [];
-  if (!Array.isArray(p.poiTypes)) p.poiTypes = [...DEFAULT_POI_TYPES];
-  if (typeof p.idPrefix !== "string" || !p.idPrefix) p.idPrefix = "load";
+  delete (p as { poiTypes?: unknown }).poiTypes; // vocabularies are code now (vocab.ts)
+  if (typeof p.idPrefix !== "string" || !p.idPrefix) p.idPrefix = mintIdPrefix();
   if (typeof p.idCounter !== "number") p.idCounter = 0;
   for (const f of p.floors) {
     if (!f || typeof f.id !== "string") throw new Error("Malformed floor entry");
@@ -85,6 +82,23 @@ export function validateProject(obj: unknown): Project {
     f.nav.edges ??= {};
     f.pois ??= {};
     f.rooms ??= {};
+    for (const [id, poi] of Object.entries(f.pois)) {
+      if (!poi || typeof poi !== "object") {
+        delete f.pois[id];
+        continue;
+      }
+      if (
+        poi.span !== undefined &&
+        !(Array.isArray(poi.span) && poi.span.every((x) => typeof x === "string") && pathEdgesValid(f, poi.span))
+      ) {
+        delete poi.span;
+      }
+      if (poi.access !== undefined && poi.access !== "emergency_only") delete poi.access;
+      const l = poi.externalLink;
+      if (l !== undefined && !(l && typeof l === "object" && typeof l.building === "string" && typeof l.key === "string")) {
+        delete poi.externalLink;
+      }
+    }
     if (!Array.isArray(f.outline) || !f.outline.every((x) => typeof x === "string")) {
       f.outline = null;
     }
@@ -179,6 +193,11 @@ export function parseProjectFileText(text: string): {
 /** Parses + validates, then replaces the document. Throws (without touching state) on bad files. */
 export async function loadProjectFile(file: File): Promise<void> {
   const { project, warnings, kind } = parseProjectFileText(await file.text());
+  // Per-session id prefix: two people who open the same shared file mint
+  // different ids from here on, so their floors merge back without collisions.
+  // Existing ids keep their prefix (never renumbered). Map imports already mint
+  // fresh via newProject(); autosave restore keeps the session's prefix.
+  if (kind === "project") project.idPrefix = mintIdPrefix();
   docStore.replace(project);
   if (kind === "map") {
     editorStore.toast(

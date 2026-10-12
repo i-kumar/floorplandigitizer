@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { docStore, editorStore, type LayerId, type ToolId } from "../core/store";
 import { performRedo, performUndo, setLayer, setTool } from "../core/tools";
+import { buildingSlug } from "../core/model";
 import { useDocStore, useEditor } from "./hooks";
+import logoUrl from "../assets/maizebuslogo.png";
 
 const TOOLS: Array<{ id: ToolId; label: string; keyHint: string; title: string }> = [
   { id: "select", label: "Select", keyHint: "V", title: "Select / move / delete (V)" },
@@ -9,6 +11,7 @@ const TOOLS: Array<{ id: ToolId; label: string; keyHint: string; title: string }
   { id: "wall", label: "Walls", keyHint: "W", title: "Draw wall chains (W) — D toggles door segments" },
   { id: "path", label: "Paths", keyHint: "P", title: "Draw the walkable nav network (P)" },
   { id: "poi", label: "POI", keyHint: "E", title: "Place points of interest (E)" },
+  { id: "door", label: "Door", keyHint: "D", title: "Mark a door: click where it starts on a wall, then where it ends (D)" },
   { id: "room", label: "Room", keyHint: "R", title: "Create a room from an enclosed wall region (R)" },
   { id: "outline", label: "Outline", keyHint: "O", title: "Draw the building footprint: click wall corners in order, click the first again to close (O)" },
   { id: "calibrate", label: "Scale", keyHint: "C", title: "Calibrate px-per-meter (C)" },
@@ -25,16 +28,17 @@ interface Props {
   onOpen: () => void;
   onSave: () => void;
   onExport: () => void;
-  onPoiTypes: () => void;
 }
 
-export function Toolbar({ onNew, onOpen, onSave, onExport, onPoiTypes }: Props) {
+export function Toolbar({ onNew, onOpen, onSave, onExport }: Props) {
   const editor = useEditor();
   const doc = useDocStore();
   const [name, setName] = useState(doc.project.building);
+  const [slug, setSlug] = useState(doc.project.buildingId);
 
   useEffect(() => {
     setName(doc.project.building);
+    setSlug(doc.project.buildingId);
   }, [doc.version]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const commitName = () => {
@@ -42,22 +46,46 @@ export function Toolbar({ onNew, onOpen, onSave, onExport, onPoiTypes }: Props) 
     if (trimmed !== doc.project.building) {
       docStore.transact((p) => {
         p.building = trimmed;
+        // First naming also seeds the id (editable separately; never auto-changed again).
+        if (!p.buildingId) p.buildingId = buildingSlug(trimmed);
       });
     }
     setName(trimmed);
   };
 
+  const commitSlug = () => {
+    const s = buildingSlug(slug);
+    if (s !== doc.project.buildingId) {
+      docStore.transact((p) => {
+        p.buildingId = s;
+      });
+    }
+    setSlug(s);
+  };
+
+  const blurOnEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+  };
+
   return (
     <div className="toolbar">
+      <img className="logo" src={logoUrl} alt="MaizeBus" draggable={false} />
       <input
         className="building-name"
         value={name}
         onChange={(e) => setName(e.target.value)}
         onBlur={commitName}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-        }}
+        onKeyDown={blurOnEnter}
         title="Building name"
+      />
+      <input
+        className="building-id"
+        value={slug}
+        placeholder="building-id"
+        onChange={(e) => setSlug(e.target.value)}
+        onBlur={commitSlug}
+        onKeyDown={blurOnEnter}
+        title="Building id: a stable slug shared by everyone working on this building and used by the linker to join buildings (lowercase letters, digits, dashes)"
       />
 
       <div className="tool-group">
@@ -77,14 +105,14 @@ export function Toolbar({ onNew, onOpen, onSave, onExport, onPoiTypes }: Props) 
       {editor.tool === "wall" && (
         <button
           className={editor.doorMode ? "tool door active" : "tool door"}
-          title="Next wall segments become door openings (D)"
+          title="Next wall segments become doors, each with its own door POI (D)"
           onClick={() =>
             editorStore.update((s) => {
               s.doorMode = !s.doorMode;
             })
           }
         >
-          Door
+          Door mode
           <span className="key-hint">D</span>
         </button>
       )}
@@ -136,9 +164,6 @@ export function Toolbar({ onNew, onOpen, onSave, onExport, onPoiTypes }: Props) 
       <div className="spacer" />
 
       <div className="tool-group">
-        <button className="tool" onClick={onPoiTypes} title="Edit the POI type list">
-          POI Types
-        </button>
         <button className="tool" onClick={onNew} title="Start a new empty project">
           New
         </button>

@@ -30,7 +30,7 @@ body {
   align-items: center;
   gap: 10px;
   padding: 6px 10px;
-  background: #22272b;
+  background: #30383e;
   color: #e8eaed;
   flex-wrap: wrap;
 }
@@ -39,9 +39,17 @@ body {
   flex: 1;
 }
 
-.building-name {
-  background: #2e353a;
-  border: 1px solid #3c444a;
+.toolbar .logo {
+  height: 26px;
+  width: auto;
+  margin-right: 4px;
+  user-select: none;
+}
+
+.building-name,
+.building-id {
+  background: #3d464d;
+  border: 1px solid #4a545b;
   color: #e8eaed;
   border-radius: 6px;
   padding: 5px 8px;
@@ -49,10 +57,22 @@ body {
   font-size: 13px;
 }
 
+.building-id {
+  width: 110px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #b8c0c8;
+}
+
+.building-id::placeholder {
+  color: #7f8a93;
+  font-family: inherit;
+}
+
 .tool-group {
   display: flex;
   gap: 2px;
-  background: #2e353a;
+  background: #3d464d;
   border-radius: 8px;
   padding: 2px;
 }
@@ -78,7 +98,7 @@ button {
 
 .tool:hover,
 .chip:hover {
-  background: #3a4147;
+  background: #4b555d;
 }
 
 .tool.active,
@@ -369,7 +389,7 @@ code {
   gap: 18px;
   align-items: center;
   padding: 4px 12px;
-  background: #22272b;
+  background: #30383e;
   color: #aab2b9;
   font-size: 12px;
 }
@@ -523,12 +543,52 @@ code {
   font-size: 13px;
 }
 
-.type-list {
+/* ---------------- merge dialog ---------------- */
+
+.merge-list {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: 300px;
+  max-height: 320px;
   overflow-y: auto;
+}
+
+.merge-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 1px solid #e3e0da;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.merge-row:hover {
+  background: #f6f4f1;
+}
+
+.merge-row input {
+  grid-row: 1 / span 2;
+}
+
+.merge-name {
+  font-weight: 600;
+}
+
+.merge-status {
+  font-size: 12px;
+  color: #2f9e44;
+}
+
+.merge-row.replace .merge-status {
+  color: #c77700;
+}
+
+.merge-stats {
+  grid-column: 2 / span 2;
 }
 
 /* ---------------- toasts ---------------- */

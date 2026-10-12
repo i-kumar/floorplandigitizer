@@ -1,4 +1,5 @@
 // Deterministic entity colors, shared by the canvas renderer and the UI chrome.
+import { POI_TYPES } from "./vocab";
 
 function hashStr(s: string): number {
   let h = 0;
@@ -12,8 +13,8 @@ export function roomColor(id: string): string {
   return ROOM_PALETTE[hashStr(id) % ROOM_PALETTE.length];
 }
 
-// Distinct, saturated hues that read on the light canvas. A few common types get
-// stable assignments; everything else hashes into the palette.
+// Distinct, saturated hues that read on the light canvas. Vocabulary types carry
+// their own color; legacy/unknown types hash into the palette.
 const POI_PALETTE = [
   "#e53935", // red
   "#8e24aa", // purple
@@ -27,15 +28,9 @@ const POI_PALETTE = [
   "#7cb342", // light green
 ];
 
-const FIXED_POI_COLORS: Record<string, string> = {
-  room: "#7e57c2",
-  door: "#8d6e63",
-  drinking_fountain: "#039be5",
-  vending_machine: "#f4511e",
-  restroom: "#00897b",
-  exit: "#e53935",
-};
+const VOCAB_COLORS: Record<string, string> = {};
+for (const e of POI_TYPES) VOCAB_COLORS[e.id] = e.color;
 
 export function poiColor(type: string): string {
-  return FIXED_POI_COLORS[type] ?? POI_PALETTE[hashStr(type) % POI_PALETTE.length];
+  return VOCAB_COLORS[type] ?? POI_PALETTE[hashStr(type) % POI_PALETTE.length];
 }

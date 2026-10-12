@@ -12,6 +12,7 @@ const COLORS = {
   bg: "#f4f3f1",
   wall: "#263238",
   door: "#8d6e63",
+  emergency: "#e53935",
   nav: "#1e88e5",
   snap: "#00c853",
   selection: "#ff9100",
@@ -207,10 +208,18 @@ export class Renderer {
       if (links) this.linkBadge(ctx, n, links, floor.id, z);
     }
 
-    // 5. POIs (color-coded by type)
+    // 5. POIs (color-coded by type; doors draw their extent along the wall)
     ctx.globalAlpha = poisAlpha;
     for (const poi of Object.values(floor.pois)) {
-      const color = poiColor(poi.type);
+      const color = poi.access === "emergency_only" ? COLORS.emergency : poiColor(poi.type);
+      const span = this.spanPoints(floor, poi);
+      if (span) {
+        ctx.beginPath();
+        this.tracePath(ctx, span, false);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 4 / z;
+        ctx.stroke();
+      }
       if (poi.navNodeId) {
         const nn = floor.nav.nodes[poi.navNodeId];
         if (nn && dist(poi, nn) > 0.5) {
@@ -276,6 +285,18 @@ export class Renderer {
 
     // 7. in-progress chain rubber band + snap indicators
     this.drawChainAndSnap(ctx, floor, z);
+
+    // 7b. door draft (Door tool): first point → cursor projected onto that wall.
+    // Drawn after the snap highlight so the door reads on top of the wall.
+    const dd = overlayStore.doorDraft;
+    if (dd) {
+      ctx.strokeStyle = COLORS.door;
+      ctx.fillStyle = COLORS.door;
+      ctx.lineWidth = 5 / z;
+      this.line(ctx, dd.a, dd.b);
+      this.dot(ctx, dd.a, 4 / z);
+      this.dot(ctx, dd.b, 4 / z);
+    }
 
     // 8. hover + selection highlights
     if (overlayStore.hover && !sameRef(overlayStore.hover, editorStore.selection)) {
@@ -415,6 +436,15 @@ export class Renderer {
       case "poi": {
         const poi = floor.pois[ref.id];
         if (poi) {
+          const span = this.spanPoints(floor, poi);
+          if (span) {
+            ctx.beginPath();
+            this.tracePath(ctx, span, false);
+            ctx.lineWidth = 8 / z;
+            ctx.globalAlpha = 0.45;
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+          }
           ctx.lineWidth = 2.5 / z;
           ctx.save();
           ctx.translate(poi.x, poi.y);
@@ -488,6 +518,13 @@ export class Renderer {
     ctx.textAlign = "center";
     ctx.textBaseline = "bottom";
     ctx.fillText(labels.join(" "), n.x, n.y - 10 / z);
+  }
+
+  /** A door POI's extent as wall-node coordinates, or null for point POIs. */
+  private spanPoints(floor: M.Floor, poi: M.Poi): M.Vec2[] | null {
+    if (!poi.span) return null;
+    const pts = poi.span.map((id) => floor.walls.nodes[id]).filter(Boolean);
+    return pts.length >= 2 ? pts : null;
   }
 
   private tracePath(ctx: CanvasRenderingContext2D, pts: M.Vec2[], close: boolean): void {

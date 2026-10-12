@@ -223,13 +223,14 @@ describe("addEdgeWithIntersections", () => {
     M.addEdge(f.walls, "c", "d", "door");
     M.addNode(f.walls, { x: 5, y: 0 }, "a");
     M.addNode(f.walls, { x: 5, y: 10 }, "b");
-    M.addEdgeWithIntersections(p, f, "walls", "a", "b");
+    const chain = M.addEdgeWithIntersections(p, f, "walls", "a", "b");
     // one new node at (5,5), four edges
     const nodes = Object.values(f.walls.nodes);
     expect(nodes).toHaveLength(5);
     const x = nodes.find((n) => !["a", "b", "c", "d"].includes(n.id))!;
     expect(x.x).toBeCloseTo(5);
     expect(x.y).toBeCloseTo(5);
+    expect(chain).toEqual(["a", x.id, "b"]); // the drawn path, for door POIs
     expect(Object.keys(f.walls.edges)).toHaveLength(4);
     expect(f.walls.edges[M.edgeKey("c", x.id)]?.kind).toBe("door"); // crossed edge keeps its kind
     expect(f.walls.edges[M.edgeKey("a", x.id)]?.kind).toBeUndefined();
@@ -272,8 +273,114 @@ describe("addEdgeWithIntersections", () => {
     const f = p.floors[0];
     M.addNode(f.walls, { x: 0, y: 0 }, "a");
     M.addNode(f.walls, { x: 10, y: 0 }, "b");
-    M.addEdgeWithIntersections(p, f, "walls", "a", "b");
+    expect(M.addEdgeWithIntersections(p, f, "walls", "a", "b")).toEqual(["a", "b"]);
     expect(Object.keys(f.walls.edges)).toEqual([M.edgeKey("a", "b")]);
+    expect(M.addEdgeWithIntersections(p, f, "walls", "a", "ghost")).toEqual([]);
+  });
+});
+
+describe("door spans", () => {
+  function projectWithDoor() {
+    const { p, f } = projectWithRoom();
+    const door = M.createDoorPoi(p, f, ["A", "B"])!;
+    return { p, f, door };
+  }
+
+  it("createDoorPoi tags the edges, centers the POI, and dedupes an identical span", () => {
+    const { p, f, door } = projectWithDoor();
+    expect(f.walls.edges[M.edgeKey("A", "B")].kind).toBe("door");
+    expect(door).toMatchObject({ type: "door", span: ["A", "B"], x: 50, y: 0 });
+    expect(M.createDoorPoi(p, f, ["B", "A"])).toBe(door); // same door, other direction
+    expect(M.createDoorPoi(p, f, ["A", "C"])).toBeNull(); // A-C is not a wall edge
+    expect(Object.keys(f.pois)).toHaveLength(2); // room POI + the door
+  });
+
+  it("pathEdgesValid rejects short, repeated, missing, and unjoined paths", () => {
+    const { f } = projectWithRoom();
+    expect(M.pathEdgesValid(f, ["A"])).toBe(false);
+    expect(M.pathEdgesValid(f, ["A", "B"])).toBe(true);
+    expect(M.pathEdgesValid(f, ["A", "B", "C"])).toBe(true);
+    expect(M.pathEdgesValid(f, ["A", "B", "A"])).toBe(false); // folded
+    expect(M.pathEdgesValid(f, ["A", "ghost"])).toBe(false);
+    expect(M.pathEdgesValid(f, ["A", "C"])).toBe(false); // diagonal, no edge
+  });
+
+  it("splitWallEdge inserts the new node into the span and keeps it centered", () => {
+    const { f, door } = projectWithDoor();
+    M.splitWallEdge(f, M.edgeKey("A", "B"), { x: 30, y: 0 }, "m");
+    expect(door.span).toEqual(["A", "m", "B"]);
+    expect(f.walls.edges[M.edgeKey("A", "m")].kind).toBe("door");
+    expect(M.pathEdgesValid(f, door.span!)).toBe(true);
+    expect(door.x).toBe(50);
+    expect(M.doorPoiForEdge(f, M.edgeKey("m", "B"))).toBe(door);
+    expect(M.doorPoiForEdge(f, M.edgeKey("B", "C"))).toBeUndefined();
+  });
+
+  it("moveWallNode re-centers the door (raw coordinate writes would not)", () => {
+    const { f, door } = projectWithDoor();
+    M.moveWallNode(f, "B", { x: 80, y: 0 });
+    expect(door.x).toBe(40);
+  });
+
+  it("mergeWallNodes remaps the span; a folded span degrades to a point", () => {
+    const { f, door } = projectWithDoor();
+    M.splitWallEdge(f, M.edgeKey("A", "B"), { x: 30, y: 0 }, "m");
+    M.mergeWallNodes(f, "m", "B"); // drag B onto m: [A,m,B] → [A,m]
+    expect(door.span).toEqual(["A", "m"]);
+    expect(door.x).toBe(15);
+
+    const again = projectWithDoor();
+    M.mergeWallNodes(again.f, "A", "B"); // [A,B] → [A] → not a door any more
+    expect(again.f.pois[again.door.id]).toBeDefined();
+    expect(again.door.span).toBeUndefined();
+  });
+
+  it("deleting a span edge or node degrades the door to a point but keeps its data", () => {
+    const { f, door } = projectWithDoor();
+    door.name = "Main";
+    door.access = "emergency_only";
+    expect(M.syncDoorPois(f)).toEqual([]);
+    M.deleteWallEdge(f, M.edgeKey("A", "B"));
+    expect(f.pois[door.id]).toMatchObject({ name: "Main", access: "emergency_only", x: 50, y: 0 });
+    expect(door.span).toBeUndefined();
+
+    const again = projectWithDoor();
+    M.deleteWallNode(again.f, "B");
+    expect(again.f.pois[again.door.id]).toBeDefined();
+    expect(again.door.span).toBeUndefined();
+  });
+
+  it("insertDoorOnEdge splits at both ends, reuses nodes near the ends, rejects short doors", () => {
+    const { p, f } = projectWithRoom();
+    const door = M.insertDoorOnEdge(p, f, M.edgeKey("A", "B"), 0.6, 0.2, 5)!;
+    expect(door.span).toHaveLength(2);
+    const [s, e] = door.span!.map((id) => f.walls.nodes[id]);
+    expect(s.x).toBeCloseTo(20);
+    expect(e.x).toBeCloseTo(60);
+    expect(f.walls.edges[M.edgeKey(s.id, e.id)].kind).toBe("door");
+    expect(f.walls.edges[M.edgeKey("A", s.id)].kind).toBeUndefined(); // leftovers stay plain walls
+    expect(f.rooms.r1.loop).toHaveLength(6); // both cuts patched into the room
+    expect(M.loopEdgesValid(f, f.rooms.r1.loop)).toBe(true);
+
+    // 2px from D on a 100px edge → D itself is the end node
+    const d2 = M.insertDoorOnEdge(p, f, M.edgeKey("C", "D"), 0.98, 0.5, 5)!;
+    expect(d2.span).toContain("D");
+    expect(d2.span).not.toContain("C");
+
+    expect(M.insertDoorOnEdge(p, f, M.edgeKey("B", "C"), 0.5, 0.52, 5)).toBeNull();
+    // whole edge → no split at all
+    const d3 = M.insertDoorOnEdge(p, f, M.edgeKey("B", "C"), 0.01, 0.99, 5)!;
+    expect(d3.span).toEqual(["B", "C"]);
+  });
+
+  it("cloneProject deep-copies spans and external links", () => {
+    const { p, f, door } = projectWithDoor();
+    door.externalLink = { building: "lib", key: "k" };
+    const clone = M.cloneProject(p);
+    clone.floors[0].pois[door.id].span!.push("Z");
+    clone.floors[0].pois[door.id].externalLink!.key = "changed";
+    expect(f.pois[door.id].span).toEqual(["A", "B"]);
+    expect(f.pois[door.id].externalLink!.key).toBe("k");
   });
 });
 
@@ -300,7 +407,13 @@ describe("ids and cloning", () => {
     const p = M.newProject();
     const id = M.newId(p, "n");
     expect(id).toBe(`${p.idPrefix}-n${p.idCounter}`);
-    expect(p.idPrefix).toHaveLength(4);
+    expect(p.idPrefix).toHaveLength(6);
+    expect(M.mintIdPrefix()).not.toBe(p.idPrefix);
+  });
+
+  it("buildingSlug normalizes ids", () => {
+    expect(M.buildingSlug("  Science Hall (North) ")).toBe("science-hall-north");
+    expect(M.buildingSlug("---")).toBe("");
   });
 
   it("cloneProject shares image refs but deep-copies geometry", () => {

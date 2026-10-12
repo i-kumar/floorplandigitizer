@@ -5,7 +5,22 @@ import { docStore, editorStore, type ItemRef } from "../core/store";
 import { deleteSelection } from "../core/tools";
 import * as M from "../core/model";
 import { dist, polygonSignedArea } from "../core/geometry";
+import {
+  EXTERNAL_LINK_KINDS,
+  POI_ACCESS,
+  typeOptionsFor,
+  vocabLabel,
+  type VocabEntry,
+} from "../core/vocab";
 import { useDoc, useEditor } from "./hooks";
+
+/** Each focusNonce bump is consumed by exactly one input: the name field of the
+ *  POI/room that was just created. Without this, any later (re)mount of an
+ *  inspector with the same nonce would refocus its field and swallow keyboard
+ *  shortcuts like Delete. Consumed when the focus actually happens (inside the
+ *  timeout), not when the effect runs — StrictMode runs effects twice in dev and
+ *  cancels the first timeout, which would otherwise swallow the focus. */
+let consumedFocusNonce = 0;
 
 /** Text input that keeps local state and commits on blur/Enter. */
 function CommitInput({
@@ -25,10 +40,13 @@ function CommitInput({
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => setText(value), [value]);
   useEffect(() => {
-    if (!autoFocusNonce) return;
+    if (!autoFocusNonce || autoFocusNonce === consumedFocusNonce) return;
     // Defer past the canvas click's default action, which would otherwise
-    // steal focus straight back to the canvas.
+    // steal focus straight back to the canvas. Select everything so typing a
+    // name (e.g. a room number) replaces the placeholder "Room 7" immediately.
     const t = setTimeout(() => {
+      if (autoFocusNonce === consumedFocusNonce) return;
+      consumedFocusNonce = autoFocusNonce;
       ref.current?.focus();
       ref.current?.select();
     }, 0);
@@ -55,32 +73,29 @@ function CommitInput({
   );
 }
 
-/** Real dropdown for POI types (a datalist filters by the current text, hiding
- *  the other options). "＋ new type…" prompts and adds to the project list. */
-function PoiTypeSelect({ value, onCommit }: { value: string; onCommit: (t: string) => void }) {
-  const doc = useDoc();
-  const NEW = "__new__";
-  const options = doc.poiTypes.includes(value) ? doc.poiTypes : [value, ...doc.poiTypes];
+/** Real dropdown over the closed vocabulary (a datalist filters by the current
+ *  text, hiding the other options). A legacy value that isn't offered stays
+ *  selectable so old files open cleanly — export flags it. */
+function PoiTypeSelect({
+  value,
+  vocab,
+  onCommit,
+  disabled,
+}: {
+  value: string;
+  vocab: VocabEntry[];
+  onCommit: (t: string) => void;
+  disabled?: boolean;
+}) {
+  const known = vocab.some((e) => e.id === value);
   return (
-    <select
-      value={value}
-      onChange={(e) => {
-        const v = e.target.value;
-        if (v === NEW) {
-          const raw = window.prompt("New POI type:");
-          const t = raw?.trim().replace(/\s+/g, "_").toLowerCase();
-          if (t) onCommit(t);
-          return; // controlled value snaps back if the prompt was cancelled
-        }
-        onCommit(v);
-      }}
-    >
-      {options.map((t) => (
-        <option key={t} value={t}>
-          {t}
+    <select value={value} disabled={disabled} onChange={(e) => onCommit(e.target.value)}>
+      {!known && <option value={value}>{vocabLabel(value)}</option>}
+      {vocab.map((e) => (
+        <option key={e.id} value={e.id}>
+          {e.label}
         </option>
       ))}
-      <option value={NEW}>＋ new type…</option>
     </select>
   );
 }
@@ -171,7 +186,13 @@ function NodeInspector({
     docStore.transact((p) => {
       const fl = M.findFloor(p, floor.id);
       const n = fl && (layer === "walls" ? fl.walls : fl.nav).nodes[id];
-      if (n) n[axis] = v;
+      if (!fl || !n) return;
+      const pt = { x: n.x, y: n.y, [axis]: v };
+      if (layer === "walls") M.moveWallNode(fl, id, pt); // door spans follow
+      else {
+        n.x = pt.x;
+        n.y = pt.y;
+      }
     });
   };
 
@@ -292,6 +313,14 @@ function EdgeInspector({
   for (const e of Object.values(g.edges)) if (e.kind) kindsInUse.add(e.kind);
   const seeds = layer === "walls" ? ["door", "window"] : ["accessible", "one_way"];
   for (const s of seeds) kindsInUse.add(s);
+  const doorPoi = layer === "walls" ? M.doorPoiForEdge(floor, edgeKeyStr) : undefined;
+
+  const selectPoi = (pid: string, focus = false) =>
+    editorStore.update((s) => {
+      s.layer = "pois";
+      s.selection = { kind: "poi", id: pid };
+      if (focus) s.focusNonce++;
+    });
 
   return (
     <div className="panel-section">
@@ -301,6 +330,33 @@ function EdgeInspector({
       <div className="small">
         Length: {lengthPx.toFixed(1)} px{meters != null ? ` = ${meters.toFixed(2)} m` : ""}
       </div>
+      {layer === "walls" && edge.kind === "door" && doorPoi && (
+        <div className="row-between small">
+          <span>
+            Door POI <b>{doorPoi.name || doorPoi.id}</b>
+          </span>
+          <button className="mini" onClick={() => selectPoi(doorPoi.id)}>
+            Select
+          </button>
+        </div>
+      )}
+      {layer === "walls" && edge.kind === "door" && !doorPoi && (
+        <button
+          className="wide"
+          title="Every door needs exactly one POI spanning it — this creates it for this edge"
+          onClick={() => {
+            let pid = "";
+            docStore.transact((p) => {
+              const fl = M.findFloor(p, floor.id);
+              const poi = fl && M.createDoorPoi(p, fl, [edge.a, edge.b]);
+              if (poi) pid = poi.id;
+            });
+            if (pid) selectPoi(pid, true);
+          }}
+        >
+          Add door POI
+        </button>
+      )}
       <label className="field">
         <span>kind</span>
         <CommitInput
@@ -335,26 +391,36 @@ function PoiInspector({ floor, id }: { floor: M.Floor; id: string }) {
   const poi = floor.pois[id];
   if (!poi) return null;
   const room = poi.roomId ? floor.rooms[poi.roomId] : undefined;
+  const ext = poi.externalLink;
+
+  const update = (fn: (target: M.Poi, fl: M.Floor) => void) =>
+    docStore.transact((p) => {
+      const fl = M.findFloor(p, floor.id);
+      const target = fl?.pois[id];
+      if (fl && target) fn(target, fl);
+    });
 
   return (
     <div className="panel-section">
       <div className="muted small">
         POI <code>{id}</code>
+        {poi.span ? ` · door spanning ${poi.span.length} wall nodes` : ""}
       </div>
       <label className="field">
         <span>type</span>
         <PoiTypeSelect
           value={poi.type}
+          vocab={typeOptionsFor(poi)}
+          disabled={!!poi.span}
           onCommit={(t) => {
-            docStore.transact((p) => {
-              const fl = M.findFloor(p, floor.id);
-              const target = fl?.pois[id];
-              if (target) target.type = t;
-              if (!p.poiTypes.includes(t)) p.poiTypes.push(t);
+            update((target) => {
+              target.type = t;
             });
-            editorStore.update((s) => {
-              s.lastPoiType = t;
-            });
+            if (!poi.roomId) {
+              editorStore.update((s) => {
+                s.lastPoiType = t;
+              });
+            }
           }}
         />
       </label>
@@ -362,23 +428,52 @@ function PoiInspector({ floor, id }: { floor: M.Floor; id: string }) {
         <span>name</span>
         <CommitInput
           value={poi.name ?? ""}
-          placeholder="e.g. Fountain by gym"
+          placeholder={poi.type === "door" ? "e.g. Main entrance" : "e.g. Fountain by gym"}
           autoFocusNonce={editor.focusNonce}
           onCommit={(v) =>
-            docStore.transact((p) => {
-              const fl = M.findFloor(p, floor.id);
-              const target = fl?.pois[id];
-              if (!target) return;
+            update((target, fl) => {
               const t = v.trim();
               if (t) target.name = t;
               else delete target.name;
-              if (target.roomId && fl!.rooms[target.roomId] && t) {
-                fl!.rooms[target.roomId].name = t;
+              if (target.roomId && fl.rooms[target.roomId] && t) {
+                fl.rooms[target.roomId].name = t;
               }
             })
           }
         />
       </label>
+      {poi.type === "door" && (
+        <label className="field">
+          <span>access</span>
+          <select
+            value={poi.access ?? ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              update((target) => {
+                if (v === "emergency_only") target.access = "emergency_only";
+                else delete target.access;
+              });
+            }}
+          >
+            <option value="">Normal</option>
+            {POI_ACCESS.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {poi.span && (
+        <div className="muted small">
+          Its extent follows the wall nodes it spans — drag those on the Walls layer to resize.
+        </div>
+      )}
+      {poi.type === "door" && !poi.span && (
+        <div className="muted small">
+          This door is a point — redraw it with the Door tool (D) to give it an extent.
+        </div>
+      )}
       {room && (
         <div className="small">
           Room POI for <b>{room.name}</b>
@@ -392,10 +487,8 @@ function PoiInspector({ floor, id }: { floor: M.Floor; id: string }) {
           <button
             className="mini"
             onClick={() =>
-              docStore.transact((p) => {
-                const fl = M.findFloor(p, floor.id);
-                const target = fl?.pois[id];
-                if (target) delete target.navNodeId;
+              update((target) => {
+                delete target.navNodeId;
               })
             }
             title="Detach the nav node from this POI (the node itself stays)"
@@ -409,6 +502,81 @@ function PoiInspector({ floor, id }: { floor: M.Floor; id: string }) {
           Not routable yet — with the Path tool (P), click this POI to drop a linked nav node on
           it.
         </div>
+      )}
+
+      <div className="panel-title small">Other building</div>
+      {ext ? (
+        <>
+          <label className="field">
+            <span>building id</span>
+            <CommitInput
+              value={ext.building}
+              placeholder="their id, e.g. library"
+              onCommit={(v) =>
+                update((target) => {
+                  if (target.externalLink) target.externalLink.building = M.buildingSlug(v);
+                })
+              }
+            />
+          </label>
+          <label className="field">
+            <span>key</span>
+            <CommitInput
+              value={ext.key}
+              placeholder="shared, e.g. bridge-2f"
+              onCommit={(v) =>
+                update((target) => {
+                  if (target.externalLink) target.externalLink.key = v.trim();
+                })
+              }
+            />
+          </label>
+          <label className="field">
+            <span>kind</span>
+            <select
+              value={ext.kind ?? "door"}
+              onChange={(e) => {
+                const v = e.target.value;
+                update((target) => {
+                  if (target.externalLink) target.externalLink.kind = v;
+                });
+              }}
+            >
+              {EXTERNAL_LINK_KINDS.map((k) => (
+                <option key={k} value={k}>
+                  {k}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="muted small">
+            The other side marks its door with <b>your</b> building id and the same key; the
+            linker joins the two nav nodes.
+            {!poi.navNodeId ? " This POI still needs a nav node." : ""}
+          </div>
+          <button
+            className="mini"
+            onClick={() =>
+              update((target) => {
+                delete target.externalLink;
+              })
+            }
+          >
+            Remove link
+          </button>
+        </>
+      ) : (
+        <button
+          className="mini"
+          title="Mark this POI as the connection to another building (door, bridge, tunnel…)"
+          onClick={() =>
+            update((target) => {
+              target.externalLink = { building: "", key: "", kind: "door" };
+            })
+          }
+        >
+          Connects to another building…
+        </button>
       )}
       <DeleteButton label={room ? "Delete POI + room" : "Delete POI"} />
     </div>
@@ -453,12 +621,12 @@ function RoomInspector({ floor, id }: { floor: M.Floor; id: string }) {
           <span>type</span>
           <PoiTypeSelect
             value={roomPoi.type}
+            vocab={typeOptionsFor(roomPoi)}
             onCommit={(t) =>
               docStore.transact((p) => {
                 const fl = M.findFloor(p, floor.id);
                 const poi = fl?.pois[room.poiId];
                 if (poi) poi.type = t;
-                if (!p.poiTypes.includes(t)) p.poiTypes.push(t);
               })
             }
           />

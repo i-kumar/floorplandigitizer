@@ -4,7 +4,8 @@ import * as M from "./model";
 import { snap, SNAP, type SnapResult } from "./snap";
 import { hitTest } from "./hit";
 import { canonicalLoopKey, faceAtPoint, traceFaces, type Face } from "./rooms";
-import { dist, polygonCentroid } from "./geometry";
+import { dist, polygonCentroid, projectPointOnSegment } from "./geometry";
+import { isPoiType } from "./vocab";
 import {
   docStore,
   editorStore,
@@ -88,6 +89,8 @@ class SelectTool implements Tool {
       });
     }
     if (hit && (hit.kind === "node" || hit.kind === "poi")) {
+      // A spanned door's extent lives in its wall nodes — select only, no drag.
+      if (hit.kind === "poi" && f.pois[hit.id]?.span) return;
       this.mode = "pressed";
       this.start = e.img;
       this.dragRef = hit;
@@ -117,10 +120,15 @@ class SelectTool implements Tool {
         this.lastSnap = res;
         docStore.mutate((p) => {
           const fl = M.findFloor(p, f.id);
-          const n = fl && (ref.layer === "walls" ? fl.walls : fl.nav).nodes[ref.id];
-          if (n) {
-            n.x = res.point.x;
-            n.y = res.point.y;
+          if (!fl) return;
+          if (ref.layer === "walls") {
+            M.moveWallNode(fl, ref.id, res.point); // keeps door spans centered
+          } else {
+            const n = fl.nav.nodes[ref.id];
+            if (n) {
+              n.x = res.point.x;
+              n.y = res.point.y;
+            }
           }
         });
         overlayStore.update((s) => {
@@ -338,7 +346,10 @@ class ChainTool implements Tool {
       if (anchor && g.nodes[anchor]) {
         // Splits the drawn segment and any edges it crosses, sharing a node at
         // each intersection.
-        M.addEdgeWithIntersections(p, fl, layer, anchor, target, door ? "door" : undefined);
+        const chain = M.addEdgeWithIntersections(p, fl, layer, anchor, target, door ? "door" : undefined);
+        // A door segment is a door: it gets its single spanning POI in the same
+        // transaction, so step-back (right-click / Ctrl+Z) reverts both together.
+        if (door) M.createDoorPoi(p, fl, chain);
       }
       newAnchor = target;
     });
@@ -480,10 +491,9 @@ class PoiTool implements Tool {
       const fl = M.findFloor(p, fid)!;
       pid = M.newId(p, "p");
       const last = editorStore.lastPoiType;
-      const type =
-        last && p.poiTypes.includes(last)
-          ? last
-          : p.poiTypes.find((t) => t !== "room") ?? "poi";
+      // Doors have their own tool (they span a wall) and rooms their own; a
+      // plain point defaults to "other".
+      const type = last && isPoiType(last) && last !== "door" && last !== "room" ? last : "other";
       fl.pois[pid] = { id: pid, x: res.point.x, y: res.point.y, type };
     });
     editorStore.update((s) => {
@@ -498,6 +508,190 @@ class PoiTool implements Tool {
     overlayStore.update((s) => {
       s.snapPreview = null;
     });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Door tool: two clicks on one wall edge carve a door out of it (both ends split
+// unless they land on the edge's own nodes), tag it kind:"door", and create its
+// single spanning POI. One click on an existing door edge attaches/selects the
+// POI. Nothing is committed until the second click, so Esc/right-click just
+// disarm local state (like the Outline tool).
+// ---------------------------------------------------------------------------
+
+class DoorTool implements Tool {
+  private armed: {
+    edge: string;
+    t: number;
+    point: M.Vec2;
+    /** Set when the first click snapped to a node: the edge is then ambiguous
+     *  and is re-resolved on every move as the incident edge nearest the cursor. */
+    fromNode: M.NodeId | null;
+  } | null = null;
+
+  private snapWalls(e: PointerInfo): SnapResult {
+    const f = currentFloor();
+    return snap({
+      cursor: e.img,
+      graph: f.walls,
+      anchor: null,
+      zoom: zoom(),
+      shift: e.shift,
+      alt: e.alt,
+    });
+  }
+
+  private resolveEdge(f: M.Floor, cursor: M.Vec2): void {
+    const a = this.armed;
+    if (!a || !a.fromNode) return;
+    let best: { key: string; t: number } | null = null;
+    let bd = Infinity;
+    for (const key of M.edgesAt(f.walls, a.fromNode)) {
+      const e = f.walls.edges[key];
+      const A = f.walls.nodes[e.a];
+      const B = f.walls.nodes[e.b];
+      if (!A || !B) continue;
+      const d = dist(cursor, projectPointOnSegment(cursor, A, B).point);
+      if (d < bd) {
+        bd = d;
+        best = { key, t: e.a === a.fromNode ? 0 : 1 };
+      }
+    }
+    if (best) {
+      a.edge = best.key;
+      a.t = best.t;
+    }
+  }
+
+  private projectOnArmed(f: M.Floor, cursor: M.Vec2): { point: M.Vec2; t: number; len: number } | null {
+    const a = this.armed;
+    if (!a) return null;
+    const e = f.walls.edges[a.edge];
+    const A = e && f.walls.nodes[e.a];
+    const B = e && f.walls.nodes[e.b];
+    if (!A || !B) return null;
+    return { ...projectPointOnSegment(cursor, A, B), len: dist(A, B) };
+  }
+
+  private select(pid: string): void {
+    editorStore.update((s) => {
+      s.selection = { kind: "poi", id: pid };
+      s.focusNonce++;
+    });
+  }
+
+  private disarm(): void {
+    this.armed = null;
+    overlayStore.update((s) => {
+      s.doorDraft = null;
+      s.snapPreview = null;
+    });
+  }
+
+  onMove(e: PointerInfo): void {
+    const f = currentFloor();
+    if (!this.armed) {
+      const res = this.snapWalls(e);
+      overlayStore.update((s) => {
+        s.snapPreview = res;
+      });
+      return;
+    }
+    this.resolveEdge(f, e.img);
+    const proj = this.projectOnArmed(f, e.img);
+    const a = this.armed;
+    overlayStore.update((s) => {
+      s.doorDraft = proj ? { a: a.point, b: proj.point } : null;
+      s.snapPreview = proj ? { kind: "segment", point: proj.point, edge: a.edge, t: proj.t } : null;
+    });
+  }
+
+  onDown(e: PointerInfo): void {
+    const f = currentFloor();
+    const fid = f.id;
+    if (!this.armed) {
+      const res = this.snapWalls(e);
+      if (res.kind === "segment") {
+        const edge = f.walls.edges[res.edge];
+        if (edge?.kind === "door") {
+          // Already a door edge: one click attaches (or finds) its POI.
+          const existing = M.doorPoiForEdge(f, res.edge);
+          if (existing) {
+            this.select(existing.id);
+            return;
+          }
+          let pid = "";
+          docStore.transact((p) => {
+            const fl = M.findFloor(p, fid)!;
+            const poi = M.createDoorPoi(p, fl, [edge.a, edge.b]);
+            if (poi) pid = poi.id;
+          });
+          if (pid) this.select(pid);
+          return;
+        }
+        this.armed = { edge: res.edge, t: res.t, point: res.point, fromNode: null };
+      } else if (res.kind === "node") {
+        const keys = M.edgesAt(f.walls, res.node);
+        if (!keys.length) {
+          editorStore.toast("Click on a wall to start a door");
+          return;
+        }
+        const e0 = f.walls.edges[keys[0]];
+        this.armed = { edge: keys[0], t: e0.a === res.node ? 0 : 1, point: res.point, fromNode: res.node };
+      } else {
+        editorStore.toast("Click on a wall to start a door");
+        return;
+      }
+      this.onMove(e);
+      return;
+    }
+
+    // Second click: carve the door out of the armed edge.
+    this.resolveEdge(f, e.img);
+    const proj = this.projectOnArmed(f, e.img);
+    const armed = this.armed;
+    if (!proj) {
+      this.disarm();
+      return;
+    }
+    const tol = SNAP.node / zoom();
+    if (Math.abs(proj.t - armed.t) * proj.len < tol) {
+      editorStore.toast("Door too short — click further along the wall");
+      return;
+    }
+    let pid = "";
+    docStore.transact((p) => {
+      const fl = M.findFloor(p, fid)!;
+      const poi = M.insertDoorOnEdge(p, fl, armed.edge, armed.t, proj.t, tol);
+      if (poi) pid = poi.id;
+    });
+    this.disarm();
+    if (pid) this.select(pid);
+    this.onMove(e);
+  }
+
+  onUp(_e: PointerInfo): void {}
+
+  onRightDown(_e: PointerInfo): void {
+    this.disarm();
+  }
+
+  handleUndo(): boolean {
+    if (!this.armed) return false;
+    this.disarm();
+    return true;
+  }
+
+  onKey(e: KeyboardEvent): boolean {
+    if (e.key === "Escape" && this.armed) {
+      this.disarm();
+      return true;
+    }
+    return false;
+  }
+
+  deactivate(): void {
+    this.disarm();
   }
 }
 
@@ -761,6 +955,7 @@ export const tools: Record<ToolId, Tool> = {
   wall: new ChainTool("walls"),
   path: new ChainTool("nav"),
   poi: new PoiTool(),
+  door: new DoorTool(),
   room: new RoomTool(),
   outline: new OutlineTool(),
   calibrate: new CalibrateTool(),
@@ -774,6 +969,7 @@ const TOOL_LAYERS: Partial<Record<ToolId, LayerId>> = {
   wall: "walls",
   path: "nav",
   poi: "pois",
+  door: "pois",
   room: "walls",
   outline: "walls",
 };
@@ -846,6 +1042,9 @@ export function deleteSelection(): void {
     }
   }
   const fid = editorStore.floorId;
+  const spannedBefore = Object.values(currentFloor().pois)
+    .filter((poi) => poi.span)
+    .map((poi) => poi.id);
   docStore.transact((p) => {
     const fl = M.findFloor(p, fid);
     if (!fl) return;
@@ -866,6 +1065,14 @@ export function deleteSelection(): void {
         break;
     }
   });
+  // A wall edit can orphan a door's span; the POI survives as a point — say so.
+  const after = currentFloor().pois;
+  const lost = spannedBefore.filter((id) => after[id] && !after[id].span).length;
+  if (lost) {
+    editorStore.toast(
+      `${lost} door${lost === 1 ? "" : "s"} lost ${lost === 1 ? "its" : "their"} wall span and ${lost === 1 ? "is" : "are"} now a point — redraw with the Door tool (D)`,
+    );
+  }
   editorStore.update((s) => {
     s.selection = null;
   });

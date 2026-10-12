@@ -1,5 +1,6 @@
 // Global keyboard handling. The active tool gets first refusal (chain tools
-// consume Esc/Enter/D and undo/redo); everything else lands in the global map.
+// consume Esc/Enter/D and undo/redo; the Door tool consumes Esc while armed);
+// everything else lands in the global map.
 import { docStore, editorStore } from "./store";
 import {
   activeTool,
@@ -100,6 +101,11 @@ export function handleKeyDown(e: KeyboardEvent): void {
     case "e":
     case "E":
       setTool("poi");
+      break;
+    case "d":
+    case "D":
+      // Inside the Wall tool, D is consumed above as the door-segment toggle.
+      setTool("door");
       break;
     case "r":
     case "R":

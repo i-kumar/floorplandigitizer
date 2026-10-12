@@ -4,11 +4,11 @@ import { useRef, useState } from "react";
 import { docStore, editorStore } from "../core/store";
 import { fitView, setFloor, setTool } from "../core/tools";
 import * as M from "../core/model";
-import { mergeProjectInto } from "../core/interchange";
 import { parseProjectFileText } from "../core/persist";
 import { useDoc, useEditor } from "./hooks";
 import { loadImageFile } from "../core/pdf";
 import { PdfImportDialog } from "./PdfImportDialog";
+import { MergeDialog, type MergeSource } from "./MergeDialog";
 
 export function applyFloorImage(floorId: string, image: M.FloorImage): boolean {
   const floor = M.findFloor(docStore.project, floorId);
@@ -63,6 +63,7 @@ export function FloorPanel() {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameText, setRenameText] = useState("");
   const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [mergeSource, setMergeSource] = useState<MergeSource | null>(null);
 
   const current = M.findFloor(doc, editor.floorId);
 
@@ -83,17 +84,11 @@ export function FloorPanel() {
 
   const handleMergeFile = async (file: File) => {
     try {
-      const { project: source, warnings } = parseProjectFileText(await file.text());
-      const firstAdded = source.floors[0]?.id;
-      docStore.transact((p) => mergeProjectInto(p, source));
-      if (firstAdded) setFloor(firstAdded);
-      editorStore.toast(
-        `Added ${source.floors.length} floor${source.floors.length === 1 ? "" : "s"} from ${file.name}`,
-      );
-      for (const w of warnings.slice(0, 4)) editorStore.toast(w);
+      const { project, warnings } = parseProjectFileText(await file.text());
+      setMergeSource({ fileName: file.name, project, warnings });
     } catch (err) {
       editorStore.toast(
-        `Couldn't add floors: ${err instanceof Error ? err.message : String(err)}`,
+        `Couldn't read that file: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   };
@@ -236,7 +231,7 @@ export function FloorPanel() {
         )}
         <button
           className="wide"
-          title="Append every floor from another .floorplan.json or exported .map.json into this project"
+          title="Bring floors from another .floorplan.json or exported .map.json into this project — a collaborator's fork of this building file replaces the floors they worked on; you pick which"
           onClick={() => mergeRef.current?.click()}
         >
           Add floors from another file…
@@ -312,6 +307,7 @@ export function FloorPanel() {
       </div>
 
       {pdfFile && <PdfImportDialog file={pdfFile} onClose={() => setPdfFile(null)} />}
+      {mergeSource && <MergeDialog source={mergeSource} onClose={() => setMergeSource(null)} />}
     </div>
   );
 }

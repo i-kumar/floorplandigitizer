@@ -5,7 +5,6 @@ import { FloorPanel, applyFloorImage } from "./ui/FloorPanel";
 import { Inspector } from "./ui/Inspector";
 import { StatusBar } from "./ui/StatusBar";
 import { ExportDialog } from "./ui/ExportDialog";
-import { PoiTypesDialog } from "./ui/PoiTypesDialog";
 import { PdfImportDialog } from "./ui/PdfImportDialog";
 import { docStore, editorStore } from "./core/store";
 import { newProject } from "./core/model";
@@ -26,7 +25,6 @@ import { useEditor } from "./ui/hooks";
 export default function App() {
   const editor = useEditor();
   const [showExport, setShowExport] = useState(false);
-  const [showPoiTypes, setShowPoiTypes] = useState(false);
   const [droppedPdf, setDroppedPdf] = useState<File | null>(null);
   const openRef = useRef<HTMLInputElement>(null);
 
@@ -87,7 +85,6 @@ export default function App() {
         onOpen={() => openRef.current?.click()}
         onSave={saveProjectFile}
         onExport={() => setShowExport(true)}
-        onPoiTypes={() => setShowPoiTypes(true)}
       />
       <div className="main">
         <div className="canvas-wrap">
@@ -110,6 +107,12 @@ export default function App() {
               (or press Enter) to finish; right-click/Ctrl+Z un-picks; Esc cancels
             </div>
           )}
+          {editor.tool === "door" && (
+            <div className="banner calm">
+              Door: click where the door starts on a wall, then where it ends — one click on an
+              existing door segment attaches its POI; Esc cancels
+            </div>
+          )}
         </div>
         <aside className="sidebar">
           <FloorPanel />
@@ -127,7 +130,6 @@ export default function App() {
       </div>
 
       {showExport && <ExportDialog onClose={() => setShowExport(false)} />}
-      {showPoiTypes && <PoiTypesDialog onClose={() => setShowPoiTypes(false)} />}
       {droppedPdf && <PdfImportDialog file={droppedPdf} onClose={() => setDroppedPdf(null)} />}
 
       <input

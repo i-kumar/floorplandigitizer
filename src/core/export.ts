@@ -2,11 +2,14 @@
 // plus non-blocking validation warnings. Pure — easy to unit test.
 import {
   degree,
+  edgeKey,
   loopEdgesValid,
+  pathEdgesValid,
   type Floor,
   type Project,
 } from "./model";
 import { dist, polygonSignedArea } from "./geometry";
+import { isPoiType } from "./vocab";
 
 export interface ExportFloor {
   id: string;
@@ -27,11 +30,17 @@ export interface ExportFloor {
     name?: string;
     roomId?: string;
     navNodeId?: string;
+    /** Door extent along its wall (>= 2 points, image px); absent for point POIs. */
+    line?: Array<[number, number]>;
+    /** Door access restriction ("emergency_only"); absent = normal door. */
+    access?: string;
+    /** This POI connects to another building — see `externalLinks` and README. */
+    externalLink?: { building: string; key: string; kind?: string };
   }>;
   rooms: Array<{
     id: string;
     name: string;
-    /** Mirrors the room-POI's type ("room" unless changed, e.g. "classroom"). */
+    /** Mirrors the room-POI's type ("room" unless changed, e.g. "stairs"). */
     type: string;
     polygon: Array<[number, number]>;
     poiId: string;
@@ -40,8 +49,21 @@ export interface ExportFloor {
   outline: Array<[number, number]> | null;
 }
 
+export interface ExternalLinkEntry {
+  floor: string;
+  poi: string;
+  navNode: string;
+  building: string; // the other building's buildingId
+  key: string;
+  kind: string;
+}
+
 export interface ExportJson {
+  /** Bumped when the shape changes; files without it are version 1. */
+  schemaVersion: 2;
   building: string;
+  /** Stable slug; the linker matches other maps' externalLink.building to it. */
+  buildingId: string;
   floors: ExportFloor[];
   interFloorEdges: Array<{
     from: [string, string];
@@ -49,6 +71,9 @@ export interface ExportJson {
     kind: string;
     oneWay: boolean;
   }>;
+  /** Every POI that connects to another building AND has a nav node (the linker
+   *  joins nav nodes). Derived from pois[].externalLink — a convenience index. */
+  externalLinks: ExternalLinkEntry[];
 }
 
 export interface ExportWarning {
@@ -63,12 +88,22 @@ export interface ExportResult {
 
 const r2 = (v: number): number => Math.round(v * 100) / 100;
 
+interface Ctx {
+  warn: (m: string) => void;
+  info: (m: string) => void;
+  /** Every externalLink seen, with or without a nav node (for duplicate checks). */
+  external: Array<ExternalLinkEntry & { navNode: string | ""; label: string }>;
+}
+
 export function buildExport(p: Project): ExportResult {
   const warnings: ExportWarning[] = [];
-  const warn = (message: string) => warnings.push({ level: "warn", message });
-  const info = (message: string) => warnings.push({ level: "info", message });
+  const ctx: Ctx = {
+    warn: (message) => warnings.push({ level: "warn", message }),
+    info: (message) => warnings.push({ level: "info", message }),
+    external: [],
+  };
 
-  const floors: ExportFloor[] = p.floors.map((f) => exportFloor(f, warn, info));
+  const floors: ExportFloor[] = p.floors.map((f) => exportFloor(f, ctx));
 
   // Inter-floor edges: keep only those whose endpoints still exist.
   const interFloorEdges: ExportJson["interFloorEdges"] = [];
@@ -76,7 +111,7 @@ export function buildExport(p: Project): ExportResult {
     const ff = p.floors.find((fl) => fl.id === e.from.floor);
     const tf = p.floors.find((fl) => fl.id === e.to.floor);
     if (!ff || !tf || !ff.nav.nodes[e.from.node] || !tf.nav.nodes[e.to.node]) {
-      warn(`Inter-floor ${e.kind} link references a missing floor/node — dropped from export`);
+      ctx.warn(`Inter-floor ${e.kind} link references a missing floor/node — dropped from export`);
       continue;
     }
     interFloorEdges.push({
@@ -87,19 +122,49 @@ export function buildExport(p: Project): ExportResult {
     });
   }
 
+  // Cross-building links: the linker needs a building id on this side and
+  // unique (building, key) pairs; a link to our own building is a mistake.
+  if (ctx.external.length && !p.buildingId) {
+    ctx.warn("No building id set (toolbar, next to the name) — the linker can't reference this map");
+  } else if (!p.buildingId) {
+    ctx.info("No building id set (toolbar, next to the name)");
+  }
+  const seen = new Map<string, string>();
+  for (const l of ctx.external) {
+    if (p.buildingId && l.building === p.buildingId) {
+      ctx.warn(`${l.label} links to this same building — use an inter-floor link instead`);
+    }
+    const k = `${l.building}|${l.key}`;
+    const prev = seen.get(k);
+    if (prev) {
+      ctx.warn(
+        `${prev} and ${l.label} both link to "${l.building}" with key "${l.key}" — keys must be unique per building pair`,
+      );
+    } else {
+      seen.set(k, l.label);
+    }
+  }
+  const externalLinks: ExternalLinkEntry[] = ctx.external
+    .filter((l) => l.navNode)
+    .map(({ floor, poi, navNode, building, key, kind }) => ({ floor, poi, navNode, building, key, kind }));
+
   checkConnectivity(p, interFloorEdges, warnings);
 
   return {
-    json: { building: p.building, floors, interFloorEdges },
+    json: {
+      schemaVersion: 2,
+      building: p.building,
+      buildingId: p.buildingId,
+      floors,
+      interFloorEdges,
+      externalLinks,
+    },
     warnings,
   };
 }
 
-function exportFloor(
-  f: Floor,
-  warn: (m: string) => void,
-  info: (m: string) => void,
-): ExportFloor {
+function exportFloor(f: Floor, ctx: Ctx): ExportFloor {
+  const { warn, info } = ctx;
   const walls: ExportFloor["walls"] = [];
   for (const e of Object.values(f.walls.edges)) {
     const A = f.walls.nodes[e.a];
@@ -134,18 +199,67 @@ function exportFloor(
   }
 
   const pois: ExportFloor["pois"] = [];
+  const spannedEdges = new Set<string>();
   for (const poi of Object.values(f.pois)) {
+    const label = `POI "${poi.name ?? poi.id}"`;
     if (!poi.type.trim()) warn(`${f.name}: POI ${poi.id} has an empty type`);
+    else if (!isPoiType(poi.type)) {
+      warn(`${f.name}: ${label} has type "${poi.type}", which is not in the org list`);
+    }
     let navNodeId = poi.navNodeId;
     if (navNodeId && !f.nav.nodes[navNodeId]) {
-      warn(`${f.name}: POI "${poi.name ?? poi.id}" pointed at a missing nav node — link dropped`);
+      warn(`${f.name}: ${label} pointed at a missing nav node — link dropped`);
       navNodeId = undefined;
     }
     let roomId = poi.roomId;
     if (roomId && !f.rooms[roomId]) {
-      warn(`${f.name}: POI "${poi.name ?? poi.id}" pointed at a missing room — link dropped`);
+      warn(`${f.name}: ${label} pointed at a missing room — link dropped`);
       roomId = undefined;
     }
+
+    // Door extent. x/y are exported as stored (the span midpoint, maintained by
+    // the model) — recomputing + rounding here would break the import round-trip.
+    let line: ExportFloor["pois"][number]["line"];
+    if (poi.span) {
+      if (pathEdgesValid(f, poi.span)) {
+        line = poi.span.map((id) => {
+          const n = f.walls.nodes[id];
+          return [r2(n.x), r2(n.y)] as [number, number];
+        });
+        let untagged = false;
+        for (let i = 0; i + 1 < poi.span.length; i++) {
+          const k = edgeKey(poi.span[i], poi.span[i + 1]);
+          spannedEdges.add(k);
+          if (f.walls.edges[k].kind !== "door") untagged = true;
+        }
+        if (untagged) info(`${f.name}: door ${label} spans a wall edge not tagged "door"`);
+      } else {
+        warn(`${f.name}: door ${label} lost its wall span — redraw it with the Door tool (D)`);
+      }
+    } else if (poi.type === "door") {
+      warn(`${f.name}: door ${label} is a point — redraw it with the Door tool (D) to give it an extent`);
+    }
+
+    const ext = poi.externalLink;
+    if (ext) {
+      ctx.external.push({
+        floor: f.id,
+        poi: poi.id,
+        navNode: navNodeId ?? "",
+        building: ext.building,
+        key: ext.key,
+        kind: ext.kind || "door",
+        label: `${f.name}: ${label}`,
+      });
+      if (!ext.building || !ext.key) {
+        warn(`${f.name}: ${label} has an incomplete building link — both the building id and the key are required`);
+      } else if (!navNodeId) {
+        warn(
+          `${f.name}: ${label} links to building "${ext.building}" but has no nav node — the linker can't connect it`,
+        );
+      }
+    }
+
     pois.push({
       id: poi.id,
       x: r2(poi.x),
@@ -154,7 +268,21 @@ function exportFloor(
       ...(poi.name ? { name: poi.name } : {}),
       ...(roomId ? { roomId } : {}),
       ...(navNodeId ? { navNodeId } : {}),
+      ...(line ? { line } : {}),
+      ...(poi.access ? { access: poi.access } : {}),
+      ...(ext
+        ? { externalLink: { building: ext.building, key: ext.key, ...(ext.kind ? { kind: ext.kind } : {}) } }
+        : {}),
     });
+  }
+  let doorEdgesWithoutPoi = 0;
+  for (const [k, e] of Object.entries(f.walls.edges)) {
+    if (e.kind === "door" && !spannedEdges.has(k)) doorEdgesWithoutPoi++;
+  }
+  if (doorEdgesWithoutPoi) {
+    info(
+      `${f.name}: ${doorEdgesWithoutPoi} door edge${doorEdgesWithoutPoi === 1 ? "" : "s"} without a door POI (Door tool, or Edge inspector → Add door POI)`,
+    );
   }
 
   const rooms: ExportFloor["rooms"] = [];
