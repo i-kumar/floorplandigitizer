@@ -19,6 +19,12 @@ into structured map data for an indoor-navigation app:
 Everything is client-side. Projects autosave to IndexedDB and can be saved/loaded
 as `.floorplan.json` files (plan images embedded).
 
+**Hosted copy:** https://www.maizebus.com/floorplantool/ — use this if you just
+want to digitize plans; nothing to install. It is deployed from the
+`maizebus-web` repository, where this repo is a git submodule, and the URL is
+unlisted on purpose (internal tool) — share it directly. The rest of this
+section is for running the tool locally.
+
 ## Run it
 
 Fresh clone, macOS/Linux — one command installs Node (via nvm, if missing) and

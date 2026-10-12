@@ -20,6 +20,22 @@ npm run build      # typecheck + vite build
 Stack: React 18 + Vite + TypeScript (strict). Runtime deps are only react,
 react-dom, pdfjs-dist. No state/canvas/id libraries — keep it that way.
 
+## Deployment
+
+Hosted at `https://www.maizebus.com/floorplantool/` as an unlisted internal
+tool (nothing on the site links to it — keep it that way). The site repo
+(`mbusdev/maizebus-web`, locally `../maizebus-web`) includes this repo as the
+git submodule `floorplantool/`; its `scripts/build-floorplantool.sh` runs
+`npm ci && npm run typecheck && npx vite build --base=/floorplantool/` and
+copies `dist/` into the GitHub Pages artifact. Consequences:
+
+- Shipping = push here, then bump the submodule pointer there
+  (`git submodule update --remote floorplantool`, commit, push to main).
+- Don't hardcode `base` in `vite.config.ts` — dev stays at `/`; the base is
+  passed on the CLI. Keep assets `import`ed (or `?url`) so they get the prefix;
+  no absolute `/assets/...` paths in code or CSS.
+- `package-lock.json` must stay in sync with `package.json` (`npm ci` there).
+
 ## Architecture
 
 `src/core/` is framework-free TS; `src/ui/` is React chrome only.
